@@ -1,129 +1,148 @@
-# Functional Requirements — Paper Trail
+# Functional Document — Paper Trail
+## Document-to-Knowledge Extraction Agent
 
-## 1. Project Overview
+### 1. Problem Understanding
 
-Paper Trail is a Document-to-Knowledge Extraction Agent designed to convert unstructured enterprise documents into structured, evidence-backed information. The initial domain is procurement and contracts, with support for invoices, contract documents, and related business records.
+Organisations manage large volumes of business documents, including purchase invoices, procurement records, contracts, agreements, and payment terms. These documents contain important information about vendors, transactions, obligations, dates, amounts, and relationships between business entities.
 
-The system goes beyond text extraction by identifying entities, relationships, business facts, and conditional obligations. It compares extracted entities with existing master records and avoids creating links when the available evidence is insufficient.
+Although text extraction and OCR can convert documents into machine-readable text, the extracted text does not automatically become reliable, structured business knowledge. Information may be incomplete, inconsistently named, spread across multiple pages, or expressed through conditional language.
 
-## 2. Objectives
+For example, a vendor may appear under slightly different names in an invoice and a master database. A contract may state that an agreement *may be renewed subject to mutual consent*, which must not be interpreted as confirmation that renewal has occurred.
 
-- Extract relevant entities, relationships, and business facts from enterprise documents.
-- Preserve evidence supporting every extracted fact.
-- Link extracted entities to existing master records only when sufficient evidence is available.
-- Identify uncertainty, ambiguity, and unsupported claims.
-- Route uncertain cases to human review.
-- Produce structured, validated output that can be inspected and evaluated.
-- Record processing outcomes, errors, latency, and evaluation results.
+The problem is therefore not only document reading. It is the reliable conversion of unstructured information into structured, traceable, and appropriately qualified knowledge.
 
-## 3. Users and Use Cases
+### 2. Domain Context and Current-Process Challenges
 
-### Primary users
+The initial domain is procurement and contract management.
 
-- Procurement staff reviewing invoices and vendor information.
-- Contract reviewers inspecting clauses and obligations.
-- Business analysts searching extracted enterprise knowledge.
-- Project evaluators assessing extraction accuracy and reliability.
+Typical documents include:
+- Purchase invoices and vendor invoices.
+- Procurement and purchase-order documents.
+- Contracts and service agreements.
+- Payment terms and contractual obligations.
+- Renewal clauses and other conditional provisions.
 
-### Main use cases
+The current process may involve manually reading documents, copying information into spreadsheets or enterprise systems, comparing names against master records, and reviewing discrepancies.
 
-1. Upload an invoice or contract in PDF format.
-2. Extract text from digital or scanned documents.
-3. Identify entities, relationships, amounts, dates, and relevant clauses.
-4. Inspect the evidence supporting an extracted fact.
-5. Compare extracted entities against vendor or contract master records.
-6. Review ambiguous or unsupported matches.
-7. View, export, and evaluate structured results.
+This creates several challenges:
 
-## 4. Functional Requirements
+1. **Unstructured information:** Relevant facts are embedded in paragraphs, tables, scanned pages, and different document layouts.
+2. **Inconsistent entity names:** Vendors may use abbreviations, spelling variations, or legal-name variations across documents and master records.
+3. **Missing evidence:** Extracted values may be difficult to verify without locating their original source.
+4. **Conditional language:** Contractual conditions can be incorrectly represented as completed actions or guaranteed outcomes.
+5. **Uncertainty:** Similar names or incomplete information can lead to incorrect record linking.
+6. **Limited reproducibility:** Without a consistent evaluation process, it is difficult to determine whether a system's performance is improving.
 
-### FR-01: Document Input
+The proposed system addresses these challenges while retaining the original document as the source of truth.
 
-The system shall accept supported PDF documents and validate file type, size, and readability before processing.
+### 3. Proposed Intervention
 
-### FR-02: Text Extraction
+Paper Trail is a document-to-knowledge extraction agent that processes enterprise documents, extracts structured business facts, attaches supporting evidence, and links extracted entities to existing master records when the evidence is sufficient.
 
-The system shall extract text from digital PDFs and use OCR for scanned PDFs when required. Extraction failures and unreadable pages shall be reported.
+The system is designed around the following capabilities:
 
-### FR-03: Entity Extraction
+- **Document ingestion:** Accept digital and scanned PDF documents.
+- **Text extraction:** Use PDF parsing and OCR where appropriate, retaining page-level references.
+- **Knowledge extraction:** Identify entities, relationships, dates, amounts, payment terms, contractual conditions, and other relevant facts.
+- **Evidence provenance:** Associate extracted facts with supporting text, document identifiers, and page numbers.
+- **Schema validation:** Check that extracted results conform to the agreed structured representation.
+- **Master-record linking:** Generate and evaluate candidate matches against synthetic vendor and other business records.
+- **Uncertainty handling:** Leave ambiguous matches unresolved or route them for human review.
+- **Inspection and evaluation:** Provide a way to inspect results, review evidence, and measure extraction and linking quality.
 
-The system shall identify relevant entities, including vendors, invoices, contracts, dates, monetary amounts, payment terms, and renewal clauses.
+The initial prototype will use synthetic procurement and contract data. Model and service choices will remain configurable until provider, privacy, and deployment constraints are confirmed.
 
-### FR-04: Relationship Extraction
+### 4. High-Level User Journey
 
-The system shall identify supported relationships between entities, such as an invoice being issued by a vendor or a contract containing a renewal clause.
+1. **Submit a document:** A user uploads a procurement or contract PDF.
+2. **Extract the content:** The system identifies digitally available text or applies OCR to scanned pages.
+3. **Identify business knowledge:** The extraction component identifies entities, relationships, facts, and contractual conditions.
+4. **Attach evidence:** Each extracted fact is associated with its supporting passage and source page.
+5. **Validate the output:** The system checks the structured result and flags missing, invalid, or unsupported information.
+6. **Evaluate record matches:** Extracted entities are compared with the available semantic model and master records.
+7. **Handle uncertainty:** When the evidence does not support a sufficiently reliable match, the system leaves the link unresolved or requests human review.
+8. **Inspect the results:** The user reviews extracted facts, source evidence, candidate matches, confidence information, and warnings.
+9. **Evaluate performance:** Test results are compared against expected outputs, and quality, latency, cost, and failure measurements are recorded.
 
-### FR-05: Business Fact Extraction
+The system supports human review rather than treating every model output as an authoritative business decision.
 
-The system shall extract relevant business facts while preserving distinctions between explicit statements, conditional statements, interpretations, and unknown information.
+### 5. Technical and Agentic Construct
 
-### FR-06: Evidence Provenance
+The proposed architecture separates deterministic processing and validation from model-assisted interpretation.
 
-Each extracted fact shall include supporting source text and, where available, a document identifier, page number, and source location.
+**A. Document ingestion layer**
 
-### FR-07: Evidence Validation
+Accepts PDF files, validates inputs, extracts digital text, and invokes OCR for scanned content. It preserves document identifiers and page references for downstream provenance.
 
-The system shall check whether the cited evidence supports the extracted fact. Unsupported or contradictory claims shall be flagged rather than silently accepted.
+**B. Knowledge extraction layer**
 
-### FR-08: Master-Record Linking
+Uses a configurable extraction model or approach to identify entities, relationships, business facts, and conditional obligations. Structured output is validated against a predefined schema.
 
-The system shall compare extracted entities with available master records and provide candidate matches with supporting reasons. A link shall only be accepted automatically when the matching policy and evidence justify it.
+**C. Evidence and validation layer**
 
-### FR-09: Ambiguity Handling
+Checks that extracted claims have supporting evidence, retains source references, and flags unsupported or malformed results. Deterministic code handles schema checks and other rules that should not be delegated solely to a language model.
 
-When multiple candidates are plausible or evidence is insufficient, the system shall leave the entity unresolved and request human review.
+**D. Semantic model and record-linking layer**
 
-### FR-10: Conditional Obligations
+Defines the relevant business entities and their relationships. It compares extracted entities with master records, returns candidate matches with supporting reasons, and avoids creating unsupported links.
 
-The system shall preserve conditional and modal language. For example, a clause stating that a contract "may be renewed by mutual consent" shall not be interpreted as proof that renewal has occurred or is guaranteed.
+**E. Human review and results layer**
 
-### FR-11: Structured Output
+Presents extracted information, evidence, warnings, and unresolved matches for inspection. Review outcomes can be recorded for correction and evaluation.
 
-The system shall produce output conforming to a documented schema. Invalid output shall be rejected, corrected through a controlled retry when appropriate, or sent for review.
+**F. Evaluation and observability layer**
 
-### FR-12: Review and Correction
+Runs repeatable test cases and records quality metrics, schema validity, latency, cost where measurable, and failure rates. Prototype versions and prompt configurations are tracked so that changes can be compared.
 
-A reviewer shall be able to inspect evidence, candidate matches, and flagged results. Where implemented, reviewer decisions and corrections shall be recorded for audit and evaluation.
+#### Agent and code responsibilities
 
-### FR-13: Results and Export
+Model-assisted components are used for interpreting document language and extracting structured information. Conventional code is used for file validation, schema enforcement, evidence-reference checks, record-matching rules, persistence, access controls, and metric calculation.
 
-The system shall display processed facts and their evidence. Export formats and query capabilities shall be determined during implementation planning.
+The system does not rely on an unconstrained autonomous agent to make final business-record decisions. Unsupported claims and ambiguous links must be flagged rather than silently accepted.
 
-### FR-14: Observability
+### 6. Expected Behaviour and Acceptance Criteria
 
-The system shall record processing status, errors, latency, model usage, estimated cost where measurable, and evaluation metrics where applicable. Sensitive document content shall not be included in logs by default.
+**Ambiguous vendor identity**
 
-## 5. Non-Functional Requirements
+Given an invoice containing “Sri Venkateswara Traders Pvt Ltd” and master records containing “Sri Venkateshwara Traders” and “SV Traders”, the system should preserve the extracted name and its evidence. It must not automatically assert that either master record is the correct identity without sufficient supporting evidence.
 
-- **Reliability:** Processing failures shall be reported clearly.
-- **Traceability:** Extracted facts shall be traceable to source evidence.
-- **Privacy:** Sensitive data shall not be sent to external services without appropriate approval.
-- **Security:** API keys and credentials shall be stored outside source control.
-- **Maintainability:** Extraction, validation, linking, and storage components should be modular.
-- **Reproducibility:** Dataset versions, prompts, model configuration, and evaluation results should be recorded.
-- **Performance:** Latency and resource use shall be measured against agreed test conditions.
-- **Extensibility:** New document types and entity types should be addable without redesigning the complete pipeline.
+**Conditional renewal**
 
-## 6. Acceptance Criteria
+Given the clause “may be renewed for a further term by mutual consent of the parties”, the system should represent renewal as conditional. It must not claim that the contract has already been renewed or that renewal is guaranteed.
 
-The initial prototype shall be tested against the following behaviours:
+**Evidence traceability**
 
-1. A readable digital PDF can be processed into structured output.
-2. A scanned PDF can be processed through OCR, or a clear error is returned if OCR fails.
-3. Extracted facts contain source evidence and available page references.
-4. Output is checked against the documented schema.
-5. An ambiguous vendor name is not forcibly linked to a master record.
-6. A conditional renewal clause is not reported as a completed or guaranteed renewal.
-7. Unsupported claims are flagged or omitted.
-8. Processing errors are recorded without exposing secrets or unnecessary sensitive content.
-9. The evaluation runner can compare system outputs with labelled expected outputs.
-10. Results can be reproduced using documented setup instructions and versioned test data.
+A reviewer should be able to identify the source document, page, and supporting passage for an extracted fact.
 
-Quantitative accuracy, latency, and cost thresholds shall be defined before final evaluation and reported with the test conditions.
+**Structured output**
 
-## 7. Out of Scope for the Initial Prototype
+The system should validate its outputs against the agreed schema and report invalid or incomplete results.
 
-- Autonomous legal decisions or contract approval.
-- Automatic payment execution.
-- Guaranteed resolution of every entity-matching ambiguity.
-- Processing every possible enterprise document format or language.
+**Evaluation**
+
+The team should evaluate extraction, evidence support, record linking, uncertainty handling, and technical reliability using a repeatable test set. Actual measurements must be reported separately from target values.
+
+### 7. Scope, Data, and Limitations
+
+The initial scope covers procurement and contract documents, including digital PDFs and scanned PDFs. Synthetic data will be used during initial development and evaluation.
+
+The prototype will focus on document understanding, evidence-backed extraction, semantic linking, human review, and measurable evaluation. Production integration with enterprise systems, unrestricted autonomous decisions, and processing of confidential organisational data are outside the initial scope unless explicitly approved.
+
+Potential limitations include poor scan quality, OCR errors, unusual document layouts, ambiguous entity names, incomplete master data, and model errors in interpreting complex clauses.
+
+The team will document these limitations and evaluate representative failure cases. Sensitive documents will not be sent to external model services without approval.
+
+### 8. Success Criteria
+
+The project will be evaluated using:
+- Entity and relationship precision, recall, and F1.
+- Evidence-support accuracy.
+- Master-record linking precision and candidate-ranking quality.
+- Correct treatment of conditional obligations.
+- Schema-validity and failure rates.
+- Latency and cost per request, where measurable.
+- Human-review corrections and unresolved cases.
+
+Numerical targets will be defined before final evaluation. Results will be reported using the actual test-set size and measured system performance.
+
+The intended outcome is a working, inspectable prototype that transforms unstructured business documents into structured knowledge while preserving evidence, representing uncertainty, and avoiding unsupported conclusions.
