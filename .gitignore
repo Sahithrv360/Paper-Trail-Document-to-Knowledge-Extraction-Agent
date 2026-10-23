@@ -28,6 +28,17 @@ Thumbs.db
 outputs/
 logs/
 reports/
+paper_trail.sqlite3
+paper_trail.sqlite3-shm
+paper_trail.sqlite3-wal
+watched/
+data/cache/
+data/raw/
+
+# Local AI handoff archives and prompts
+PaperTrail-*.zip
+CLAUDE_HANDOFF*.md
+CLAUDE_NEXT_TASK_PROMPT.md
 
 # Uploaded or confidential documents
 uploads/

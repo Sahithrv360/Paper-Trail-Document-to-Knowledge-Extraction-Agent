@@ -4,12 +4,12 @@
 
 **Project:** Paper Trail — Document-to-Knowledge Extraction Agent  
 **Domain:** Procurement and contracts  
-**Status:** Initial repository and documentation stage  
+**Status:** A local image-to-graph slice is implemented; real invoice accuracy, OCR/PDF fallback, RAG benefit, evidence review, and UI remain unverified or incomplete.
 **Default branch:** `main`
 
 This document records implemented components, prototype versions, data provenance, evaluation results, limitations, and deployment status.
 
-At the initial documentation stage, the existence of a repository or architecture image does not imply that the extraction pipeline has been implemented or evaluated.
+The repository has a watcher-to-Donut-to-SQLite-graph path for JPG/PNG images, explicit validation/review statuses, and 47 passing unit tests. This does not establish that the real model extracts invoices accurately. PDF OCR and a frontend are absent.
 
 ## 2. What Is Built and What Remains
 
@@ -26,7 +26,9 @@ At the initial documentation stage, the existence of a repository or architectur
 - [ ] Evidence provenance and validation implemented.
 - [ ] Master-record candidate matching implemented.
 - [ ] Human-review workflow implemented.
-- [ ] Evaluation runner and versioned results implemented.
+- [x] Invoice schema, Donut adapter, dataset inspector, and small baseline evaluator implemented.
+- [x] Initial baseline run recorded against the official test split.
+- [ ] Broader repeatable evaluation and failure-case review completed.
 - [ ] Observability and public deployment completed.
 
 Checkboxes should be updated only when the corresponding work has been completed and verified.
@@ -55,6 +57,7 @@ Record the origin and handling of every dataset used.
 | Synthetic contracts | To be documented | Development and evaluation | Not yet created |
 | Synthetic vendor master | To be documented | Entity-resolution testing | Not yet created |
 | Held-out evaluation set | To be documented | Final or independent evaluation | Not yet created |
+| Katana ML invoice dataset | [Hugging Face dataset card (MIT)](https://huggingface.co/datasets/katanaml-org/invoices-donut-data-v1); original Mendeley source is [CC BY 4.0](https://data.mendeley.com/datasets/tnj49gpmtz) | Invoice schema inspection and Donut baseline | 425 train / 50 validation / 26 test; see `data/README.md` |
 
 For generated data, record the generation method, any templates or source material, dataset version, and the procedure used to verify expected answers.
 
@@ -98,13 +101,19 @@ Do not commit API keys, access tokens, or confidential document contents. Model 
 
 ## 7. Evaluation Results
 
-No measured results are available at the initial documentation stage.
+### Initial Donut Invoice Baseline — 2026-10-18
+
+The run used 5 evenly spaced records from the official test split (indices `0, 6, 12, 19, 25`) with CPU inference. Dataset revision: `d2cde298e79c94fb05bc320999deb4b7889b0464`. Model: `katanaml-org/invoices-donut-model-v1` at revision `1745f5a29c37bc5d2e16ab5e2bc6aba57fdd6f7c`. Runtime: Python 3.12.10, PyTorch 2.14.1, Transformers 4.57.6.
+
+The model matched 28 of 75 annotated field values (37.3% micro exact-match accuracy); no invoice was fully exact (0/5). Invoice number, invoice date, and customer tax ID each scored 5/5. Subtotal scored 4/5; vendor name, vendor tax ID, IBAN, and tax amount each scored 2/5; total amount scored 1/5. Customer name and all five line-item fields scored 0/5 exact match. The generated predictions were present for fewer than all rows on customer name and total amount (coverage 2/5); line-item fields had 3/5 coverage.
+
+This is a five-document compatibility baseline, not a production result. The model card reports 0.96 accuracy without defining the metric or split protocol, and the model is associated with this dataset. Do not claim independent generalization from this run. See `reports/donut-baseline.json` for the machine-readable metrics; the report is ignored by Git and can be regenerated with the documented command.
 
 Record results from the running system, not estimates or manually invented values.
 
 | Metric | Definition | Result |
 |---|---|---|
-| Entity extraction F1 | Entity precision and recall combined | Pending |
+| Entity extraction F1 | Entity precision and recall combined | Pending; the initial Donut run reports field exact match rather than entity F1 |
 | Relationship extraction F1 | Relationship precision and recall combined | Pending |
 | Evidence-support accuracy | Proportion of evaluated claims supported by their cited evidence | Pending |
 | Link precision | Proportion of accepted links that are correct | Pending |
@@ -132,7 +141,9 @@ Sensitive document contents, secrets, and unnecessary personal information must 
 
 ## 9. Limitations and Uncovered Cases
 
-At the initial stage, the system has not been validated against a representative enterprise dataset.
+The system has not been validated against a representative enterprise dataset. The invoice baseline covers five documents from one small, programmatically generated dataset.
+
+Observed baseline failure: invoice number and date were exact on the five sampled records, while all line-item fields had zero exact matches. Customer-name output was available for only two of five records. Review field-level failures on a larger, representative sample before attempting fine-tuning.
 
 Planned limitations to investigate include:
 

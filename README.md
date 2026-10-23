@@ -4,7 +4,7 @@ Paper Trail is a capstone project focused on extracting structured, evidence-bac
 
 Instead of treating OCR or PDF text extraction as the final result, the system aims to identify entities, relationships, and business facts, connect them to existing master records only when supported by evidence, and flag ambiguous cases for human review.
 
-> **Project status:** Initial setup and documentation. The end-to-end extraction pipeline, evaluation results, and deployment are not yet verified.
+> **Project status:** A local JPG/PNG watcher-to-Donut-to-SQLite-graph slice is implemented and covered by 47 unit tests. Real extraction quality on the supplied invoice is still unresolved; OCR/PDF support, usable field evidence/confidence, RAG evaluation, and a graph UI are not implemented.
 
 ## Problem Statement
 
@@ -119,13 +119,35 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-Install dependencies after `requirements.txt` has been created:
+The first implementation slice is a Python folder ingester using only the standard library. No dependency installation is required. From the repository root, run its tests with:
 
 ```bash
-pip install -r requirements.txt
+python -m unittest discover -s backend/tests -v
 ```
 
-Application run commands and test commands will be documented after the corresponding entry points are implemented.
+Run the watcher with:
+
+```powershell
+python -m backend.app.main
+```
+
+It watches `./watched` and stores its document registry in `./paper_trail.sqlite3` by default. Set `WATCH_FOLDER` and `DATABASE_PATH` to change those paths; `POLL_INTERVAL_SECONDS` defaults to `2`, and `MAX_FILE_MB` defaults to `25`. By default it only queues files. In PowerShell, set `$env:EXTRACTION_PROVIDER = 'donut'` to enable local Donut extraction and graph sync. JPG/PNG are processed; PDFs are queued and then fail because OCR/PDF extraction is not implemented. All records remain `needs_review`.
+
+To explicitly rerun a registered image with the current model/schema, use `python -m backend.app.reprocess --path watched/invoice-242.jpg`. The command prints the stored extraction and protects records marked `approved` or `corrected`.
+
+### Invoice Extraction Baseline
+
+The dataset and field mapping are documented in [`data/README.md`](./data/README.md). Install the optional model libraries only when running extraction; this downloads an approximately 809 MB model checkpoint into the Hugging Face cache. The evaluator reads the downloaded images and annotations from `data/raw/invoices-donut-data-v1/`:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r backend/requirements-extraction.txt
+python -m backend.app.extraction.inspect_dataset --split train --samples 3
+python -m backend.app.extraction.evaluate --split test --limit 5 --device cpu
+```
+
+The evaluator selects deterministic, evenly spaced local rows and writes aggregate metrics plus per-file field comparisons to `reports/donut-baseline.json` and `reports/donut-baseline.md`. Run `--limit 26` to evaluate all test images. Use validation data when experimenting with improvements and keep test data for final evaluation. Do not copy dataset invoices into `watched/`. The model does not provide field evidence or confidence, and dataset party labels combine names with addresses; unavailable fields remain null and results require review.
 
 ## Example Expected Behaviour
 
