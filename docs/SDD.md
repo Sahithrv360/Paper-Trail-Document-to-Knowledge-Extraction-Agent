@@ -20,7 +20,7 @@ This is a prototype and evaluation project. Do not describe the current reposito
 - The downloaded dataset is `katanaml-org/invoices-donut-data-v1`: 425 training, 50 validation, and 26 test invoices. Local data is in the git-ignored `data/raw/` folder.
 - On five evenly spaced test rows (0, 6, 12, 19, 25), the existing Donut run scored 28/75 exact field matches (37.3%) and 0/5 exact documents. Invoice number, date, and customer tax ID were 5/5; subtotal was 4/5; all line-item fields were 0/5 exact. Details are in `reports/test-5.json` and `reports/test-5.md`.
 
-Since slice 2, queued watcher jobs can be run through extraction and graph synchronization (opt-in; see 2b). There is still no LLM/RAG integration in the running pipeline, graph API, OCR fallback for PDFs, or frontend graph view.
+Milestones 1–4 now add evidence contracts, a source ledger, bounded OCR/PDF adapters, an opt-in vision API, a local review surface, and a benchmark harness (see 2c–2f). The original Donut baseline and queue-only default remain. The dataset comparison has not been run, so no accuracy gain is established. PaddleOCR remains a separate preview and is not used by the pipeline.
 
 ## 2a. Implementation Status Update (vertical slice 1)
 
@@ -47,19 +47,48 @@ Not done at slice 1: no validation score was produced by that patch. Donut ignor
 - **Opt-in runtime:** `main.py` keeps the original queue-only behaviour by default. `EXTRACTION_PROVIDER=donut` (plus `EXTRACTION_DEVICE`, `GRAPH_PATH`) enables local Donut extraction; it needs the optional dependencies and downloads a large checkpoint. Each cycle scans, then drains the queue in the same thread, so a slow extraction delays the next scan.
 - **Registry fixes (`ingestion/registry.py`):** `UNIQUE(document_id, content_hash, action)` previously swallowed the job for a file that was deleted and restored unchanged, and a second deletion of the same content. Both would have left the graph wrong. Those completed/failed/cancelled jobs are now re-queued on reactivation or re-deletion; `get_document` was added. Existing watcher tests are unchanged and pass.
 
-Known limitations: a crash while a job is `processing` leaves it stuck (no stale-claim recovery); the extraction store is written in the same transaction as the graph, but job completion is a separate step (re-sync is idempotent, so retry is safe); jobs run sequentially; there is no OCR source, no prompt-capable model, and Donut ignores retrieval context.
+At slice 2, interrupted jobs could remain stuck and PDFs were unsupported. Milestone 2 adds interrupted-job recovery, a single worker, bounded PDF input, and OCR/vision providers. Remaining limits include template-specific OCR mapping, single-page-only independent row counts, no user-laptop resource measurements, and no dataset evaluation.
 
 ## Invoice Item Schema and Validation Update
 
 - Canonical line items now expose `net_amount`, `vat_amount`, and `gross_amount`; `unit_price` follows the Donut dataset's `item_net_price` label. Donut's `item_net_worth` maps to net, `item_gross_worth` to gross, and `item_vat` remains a rate. If the source has no VAT amount but has printed net and gross amounts, VAT is calculated as their difference and marked in `field_origins`.
 - The old `amount` property is deprecated. For newly normalized Donut labels it retains the previous gross-first choice and includes `amount_semantics` (`gross`, `net`, or `unknown`). Historical SQLite JSON records are exposed with new amounts null and old `amount` untouched/unknown; no destructive migration or assumption is made.
 - Arithmetic checks use decimal currency rounding and compare quantity × net unit price to `net_amount`, VAT rate to `vat_amount`, net plus VAT to `gross_amount`, and item sums to invoice totals. Printed values are never changed. Validation status distinguishes reconciled, mismatch, incomplete, and ambiguous records; all still require human review.
-- The supplied `invoice-242.jpg` fixture is covered by mocked-provider regression tests. It does not demonstrate real Donut accuracy. The Donut decoder now allows up to the checkpoint's 1,536 decoder positions (previously 768) and records raw model output, generated-token count, EOS presence, and possible truncation in local provenance. No OCR fallback is installed, and natural-language prompt guidance is not consumed by Donut.
-- Party labels are split into name and address only when the model output contains an explicit newline. The source dataset combines these fields, so the adapter does not guess a split from commas or a one-line label. Confidence and field evidence remain null unless a provider returns them; review reasons state that limitation.
-- Reprocessing a record marked `approved` or `corrected` is blocked unless a caller explicitly opts in to replacement. No frontend/API is present; `GraphStore.get_extraction()` is currently the inspection path.
+- The supplied `invoice-242.jpg` fixture is covered by mocked-provider regression tests. It does not demonstrate real Donut accuracy. The Donut decoder now allows up to the checkpoint's 1,536 decoder positions (previously 768) and records raw model output, generated-token count, EOS presence, and possible truncation in local provenance. The optional PaddleOCR preview is not wired as a fallback, and natural-language prompt guidance is not consumed by Donut.
+- Party labels are split into name and address only when the model output contains an explicit newline. The source dataset combines these fields, so the adapter does not guess a split from commas or a one-line label. Donut does not return calibrated confidence or field evidence; OCR and vision providers attach evidence when available.
+- Reprocessing a record marked `approved` or `corrected` is blocked unless a caller explicitly opts in to replacement. Milestone 3 adds a local review surface; there is no general-purpose external API.
 - Use `python -m backend.app.reprocess --path watched/invoice-242.jpg` to explicitly rerun a registered image at the same document version and print its stored extraction. Same-version replacement is opt-in through this command; reviewed records remain protected.
 
-**Scope guard for the next contributor or coding assistant:** do not run a RAG comparison and do not claim any accuracy gain yet. `compare_rag.py` exists, but with Donut its "rag" arm is a no-op control, and there is no OCR/first-pass text source or prompt-capable model to feed retrieval. RAG is not wired into the processor. The only measured result remains the five-row test baseline (28/75 exact fields, 0/5 documents). The next steps are an OCR/PDF text source, a prompt-capable provider, and the reviewer surface.
+**Scope guard:** do not claim an accuracy gain until it has been measured on labeled validation data. The historical five-row Donut baseline remains 28/75 exact fields (37.3%) and 0/5 exact documents. The new benchmark harness has not been run on the dataset. The vision API is explicitly opt-in; its tests mock the network. RAG is available only to that provider and has not been evaluated.
+
+## 2c. Milestone 1: Evidence Contracts and Versioned Graph Ledger
+
+Milestone 1 adds a versioned source-of-truth ledger and deterministic graph projection. See [`DATA_CONTRACTS.md`](DATA_CONTRACTS.md) for the record and storage contracts.
+
+- `extraction/evidence.py`, `matching.py`, and `validation.py` preserve `raw_text` beside parsed values, validate page/geometry and evidence matches, produce structured findings, and check arithmetic at printed precision. Evidence matching tolerates layout and OCR variations and reports diagnostics; it does not silently change a value. Parser row counts are independent evidence when a parser is supplied; a model's self-reported count is not treated as independent.
+- `schema.py` retains historical `amount` values without assigning unknown semantics. Invalid number text becomes null with a finding. VAT is not inferred from gross minus net; calculations are validation-only.
+- `graph_ontology.py` defines the allowed node and edge types, stable identity keys, directions, and deterministic claims. `ledger.py` stores extraction versions, reviews, claims, materialized graph facts, and graph changes. Reviews are kept beside machine output, and support carries review state so reviewed-only graph views are possible.
+- Graph schema v2 migrates existing data repeatably, preserving legacy tables and importing prior extractions/reviews. Re-syncing the same version is a no-op; changed versions supersede history, and graph rebuilds are checked against active source support. The ingestion registry now uses WAL.
+- New mocked-provider regression tests cover raw/parsed values, evidence, arithmetic, malformed output, parties, line rows, ontology, persistence, review history, migration, idempotency, deletion, concurrent writers, and the graph-union invariant. These tests do not measure live model accuracy.
+
+Remaining gaps after Milestone 1: no OCR parser is supplied to live extraction, so Donut records can have `evidence_missing`; no stale-processing job recovery; reviewed-file replacement needs an explicit policy; the comma/thousands ambiguity remains for values like `1,234`; jurisdiction-specific fields remain unvalidated extensions; PDF, API/VLM, UI, and RAG remain unimplemented. No real model inference or dataset evaluation was run for this milestone.
+
+## 2d. Milestone 2: Low-Resource Extraction Adapters
+
+- `config.py` validates provider/parser choices and resource limits. The dependency-free `.env` loader does not override real environment values. Queue-only remains the default.
+- `extraction/document_input.py` handles bounded JPG/PNG input and optional PDF text extraction/rendering. It refuses documents beyond `MAX_PAGES` instead of silently truncating them.
+- `extraction/local_ocr.py` supports Tesseract (one thread, subprocess timeout) and optional RapidOCR (separate process). Both return `ParseContext` with text, boxes, and a row count when independently detectable. `ocr_mapping.py` maps labels and geometry to fields and flags ambiguous layouts.
+- `extraction/vision_api.py` implements an Anthropic Messages backend with structured JSON output. Sending requires the exact `PAPERTRAIL_ALLOW_REMOTE` acceptance phrase, API key, and model ID. Requests are bounded and transient failures get limited retries; all provider responses are locally validated. Tests mock the transport.
+- `pipeline.py` uses one extraction worker and recovers interrupted jobs. `extract_one.py` previews one file and supports a vision API dry run that sends nothing.
+- The uploaded milestone report records Linux-container fixture smoke measurements (Tesseract about 130 MB peak, RapidOCR about 1.6 GB). These are not measurements of this Windows laptop.
+
+## 2e. Milestone 3: Review and Graph Inspection
+
+`backend/app/review/server.py` serves a standard-library review UI on loopback. It requires a token, checks Host/Origin, limits JSON writes, uses a strict content security policy, and serves source pages only when the source hash still matches the extraction. The page shows evidence boxes, raw and parsed values, findings, review history, corrections, graph relations, reviewed-only filtering, and graph changes.
+
+## 2f. Milestone 4: Evaluation Harness
+
+`backend/app/extraction/benchmark.py` reports exact/normalized field metrics and coverage, line-item precision/recall/F1, exact-document accuracy, review-flag quality, invalid outputs, latency, memory, token/cost estimates, and confidence intervals. Provider comparison requires identical rows; test evaluation requires a frozen configuration and all test rows, once. The labeled dataset was unavailable when the harness was built, so Donut-vs-OCR validation comparison and final test evaluation remain undone. See `docs/EVALUATION.md`.
 
 ## 3. Requirements
 

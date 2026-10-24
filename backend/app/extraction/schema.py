@@ -3,8 +3,12 @@
 import re
 import math
 from dataclasses import asdict, dataclass, field
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
+
+
+# Digits with grouping/decimal marks; spaces, apostrophes and narrow spaces group digits.
+_NUMBER_CORE = re.compile(r"\d[\d.,\s'\u00a0\u202f]*")
 
 
 def parse_amount(value: Any) -> Optional[Decimal]:
@@ -20,10 +24,18 @@ def parse_amount(value: Any) -> Optional[Decimal]:
     text = str(value).strip()
     if not text:
         return None
-    # Currency codes/symbols are intentionally not inferred by this parser.
-    text = re.sub(r"[^0-9,.()\-]", "", text)
-    if text.startswith("(") and text.endswith(")"):
-        return None  # Negative invoice totals are not accepted as a positive total.
+    # Currency labels may surround the number ("$ 7.00", "7,00 EUR") and are ignored,
+    # never inferred. Anything else inside the digit run (OCR noise such as "69A,9O")
+    # makes the value unreadable instead of silently dropping characters.
+    digits = [index for index, char in enumerate(text) if char.isdigit()]
+    if not digits:
+        return None
+    prefix, core, suffix = text[:digits[0]], text[digits[0]:digits[-1] + 1], text[digits[-1] + 1:]
+    if _NUMBER_CORE.fullmatch(core) is None:
+        return None
+    if prefix.rstrip().endswith(("-", "(")) or suffix.lstrip().startswith(")"):
+        return None  # Negative invoice amounts are not accepted as positive values.
+    text = re.sub(r"[\s'  ]", "", core)
     if text.count(",") and text.count("."):
         decimal_mark = "." if text.rfind(".") > text.rfind(",") else ","
         grouping_mark = "," if decimal_mark == "." else "."
@@ -103,6 +115,13 @@ class InvoiceRecord:
     review_status: str = "needs_review"
     validation_status: str = "incomplete_extraction"
     review_reasons: list = field(default_factory=list)
+    # Milestone 1 data contract (all optional; absent in legacy stored records).
+    doc_type: Optional[str] = None            # provider classification; None = not classified
+    row_count_seen: Optional[int] = None      # model self-report; not independent evidence
+    extensions: dict = field(default_factory=dict)       # jurisdiction-specific raw extras
+    findings: list = field(default_factory=list)         # structured review findings
+    field_evidence: dict = field(default_factory=dict)   # path -> raw_text/value/evidence
+    validation_details: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -127,10 +146,13 @@ def normalize_donut_result(value: Any, provenance: Optional[dict] = None) -> Inv
         net = parse_amount(net_value)
         gross = parse_amount(gross_value)
         vat = parse_amount(vat_value)
-        vat_derived = False
+        # Arithmetic may detect a mismatch but never fills an unprinted amount. The
+        # dataset has no line-VAT label, so gross - net is kept apart as a check value.
+        derived = {}
         if vat is None and net is not None and gross is not None:
-            vat = gross - net
-            vat_derived = True
+            derived["vat_amount"] = {"value": _decimal_to_float(gross - net),
+                                     "method": "printed_gross_minus_printed_net",
+                                     "use": "validation_only"}
         legacy_value = _first_present(gross_value, net_value, item.get("amount"))
         legacy_semantics = ("gross" if gross_value is not None else
                             "net" if net_value is not None else
@@ -149,9 +171,10 @@ def normalize_donut_result(value: Any, provenance: Optional[dict] = None) -> Inv
             # and state its semantics rather than silently reinterpreting it.
             "amount": _decimal_to_float(parse_amount(legacy_value)),
             "amount_semantics": legacy_semantics,
-            "field_origins": {"vat_amount": "derived_from_printed_net_and_gross"
-                              if vat_derived else "model_output" if vat is not None else "unknown"},
+            "field_origins": {"vat_amount": "model_output" if vat is not None else "not_printed"},
+            "derived": derived,
             "tax_rate_percent": _decimal_to_float(parse_percent(item.get("item_vat"))),
+            "page": None,
         })
     record = InvoiceRecord(
         invoice_number=_text(header.get("invoice_no") or header.get("invoice_number")),
@@ -199,9 +222,12 @@ def validate_invoice(value: Any) -> None:
     """Raise ValueError if a normalized extraction violates the output contract."""
     if not isinstance(value, dict):
         raise ValueError("invoice output must be an object")
-    for key in ("invoice_number", "invoice_date", "currency"):
+    for key in ("invoice_number", "invoice_date", "currency", "doc_type"):
         if value.get(key) is not None and not isinstance(value[key], str):
             raise ValueError(f"{key} must be a string or null")
+    seen = value.get("row_count_seen")
+    if seen is not None and (isinstance(seen, bool) or not isinstance(seen, int) or seen < 0):
+        raise ValueError("row_count_seen must be a non-negative integer or null")
     for party_name, fields in (("customer", ("name", "address", "phone", "email", "tax_id")),
                                ("vendor", ("name", "address", "tax_id"))):
         party = value.get(party_name)
@@ -217,12 +243,16 @@ def validate_invoice(value: Any) -> None:
     if not isinstance(value.get("items"), list):
         raise ValueError("items must be a list")
     for item in value["items"]:
-        if not isinstance(item, dict) or not isinstance(item.get("description"), str):
-            raise ValueError("each item requires a description")
+        if not isinstance(item, dict) or not (item.get("description") is None or
+                                              isinstance(item.get("description"), str)):
+            raise ValueError("each item must be an object with a string-or-null description")
         if "source_row" in item and (isinstance(item["source_row"], bool) or
                                       not isinstance(item["source_row"], int) or
                                       item["source_row"] < 1):
             raise ValueError("item source_row must be a positive integer")
+        page = item.get("page")
+        if page is not None and (isinstance(page, bool) or not isinstance(page, int) or page < 1):
+            raise ValueError("item page must be a positive integer or null")
         for key in ("quantity", "unit_price", "net_amount", "vat_amount", "gross_amount",
                     "amount", "tax_rate_percent"):
             numeric = item.get(key)
@@ -255,8 +285,12 @@ def record_from_canonical(value: Any, provenance: Optional[dict] = None) -> Invo
     if not isinstance(raw_items, list):
         raise ValueError("items must be a JSON array")
     for row_number, raw in enumerate(raw_items, start=1):
-        if not isinstance(raw, dict) or not _text(raw.get("description")):
-            raise ValueError(f"canonical item row {row_number} requires a description")
+        if not isinstance(raw, dict):
+            raise ValueError(f"canonical item row {row_number} must be an object")
+        if not any(_text(raw.get(key)) if isinstance(raw.get(key), str) else raw.get(key) is not None
+                   for key in ("description", "quantity", "unit_price", "net_amount",
+                               "vat_amount", "gross_amount", "amount")):
+            raise ValueError(f"canonical item row {row_number} is empty")
         items.append({
             "source_row": raw.get("source_row", row_number),
             "description": _text(raw.get("description")),
@@ -271,6 +305,7 @@ def record_from_canonical(value: Any, provenance: Optional[dict] = None) -> Invo
                 "unknown" if raw.get("amount") is not None else None),
             "field_origins": raw.get("field_origins") if isinstance(raw.get("field_origins"), dict) else {},
             "tax_rate_percent": _decimal_to_float(parse_percent(raw.get("tax_rate_percent"))),
+            "page": _positive_int(raw.get("page")),
         })
     record = InvoiceRecord(
         invoice_number=_text(value.get("invoice_number")),
@@ -284,56 +319,48 @@ def record_from_canonical(value: Any, provenance: Optional[dict] = None) -> Invo
         currency=_text(value.get("currency")),
         bank_account_iban=_text(value.get("bank_account_iban")),
         provenance=provenance or {},
+        doc_type=normalize_doc_type(value.get("doc_type")),
+        row_count_seen=_non_negative_int(value.get("row_count_seen")),
+        extensions=_extensions(value.get("extensions")),
     )
     validate_invoice(record.to_dict())
     return record
 
 
-def arithmetic_warnings(record: dict, tolerance: float = 0.02) -> list:
-    """Check explicitly named amounts; preserve source values and never guess."""
-    warnings = []
-    cents = Decimal("0.01")
+def normalize_doc_type(value: Any) -> Optional[str]:
+    """Lower-case snake form of a provider classification ("Credit Note" -> credit_note)."""
+    text = _text(value)
+    return re.sub(r"[\s\-]+", "_", text.casefold()) if text else None
 
-    def money(value):
-        return Decimal(str(value)).quantize(cents, rounding=ROUND_HALF_UP)
 
-    sums = {"net_amount": Decimal("0"), "vat_amount": Decimal("0"),
-            "gross_amount": Decimal("0")}
-    complete = {key: True for key in sums}
-    for index, item in enumerate(record.get("items", []), start=1):
-        q, price = item.get("quantity"), item.get("unit_price")
-        net, vat, gross = (item.get("net_amount"), item.get("vat_amount"),
-                           item.get("gross_amount"))
-        rate = item.get("tax_rate_percent")
-        if q is not None and price is not None and net is not None:
-            expected = money(Decimal(str(q)) * Decimal(str(price)))
-            if abs(expected - money(net)) > Decimal(str(tolerance)):
-                warnings.append(f"Item {index}: net amount {money(net)} differs from quantity × net unit price ({expected}).")
-        if net is not None and rate is not None and vat is not None:
-            expected = money(Decimal(str(net)) * Decimal(str(rate)) / Decimal("100"))
-            if abs(expected - money(vat)) > Decimal(str(tolerance)):
-                warnings.append(f"Item {index}: VAT amount {money(vat)} differs from net amount × VAT rate ({expected}).")
-        if net is not None and vat is not None and gross is not None:
-            expected = money(Decimal(str(net)) + Decimal(str(vat)))
-            if abs(expected - money(gross)) > Decimal(str(tolerance)):
-                warnings.append(f"Item {index}: gross amount {money(gross)} differs from net plus VAT ({expected}).")
-        for key, value in (("net_amount", net), ("vat_amount", vat), ("gross_amount", gross)):
-            if value is None:
-                complete[key] = False
-            else:
-                sums[key] += money(value)
+def _positive_int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else None
 
-    for key, invoice_key, label in (("net_amount", "subtotal", "net subtotal"),
-                                    ("vat_amount", "tax_amount", "VAT total"),
-                                    ("gross_amount", "total_amount", "gross total")):
-        expected = record.get(invoice_key)
-        if expected is not None and complete[key] and abs(sums[key] - money(expected)) > Decimal(str(tolerance)):
-            warnings.append(f"Line-item {key.replace('_', ' ')} sum {sums[key]} differs from invoice {label} {money(expected)}.")
 
-    sub, tax, total = record.get("subtotal"), record.get("tax_amount"), record.get("total_amount")
-    if None not in (sub, tax, total) and abs(money(sub) + money(tax) - money(total)) > Decimal(str(tolerance)):
-        warnings.append(f"Invoice net subtotal plus VAT ({money(sub) + money(tax)}) differs from gross total ({money(total)}).")
-    return warnings
+def _non_negative_int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _extensions(value: Any) -> dict:
+    """Keep jurisdiction-specific extras (GSTIN, HSN/SAC, IFSC, ...) as raw scalars.
+
+    They are stored for review only: not validated, not scored and not written to the
+    graph until a measured requirement defines their semantics.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()
+            if item is None or isinstance(item, (str, int, float)) and not isinstance(item, bool)}
+
+
+def arithmetic_warnings(record: dict, tolerance: Optional[float] = None,
+                        precision: int = 2) -> list:
+    """Check explicitly named amounts; preserve source values and never guess.
+
+    Thin compatibility wrapper over ``validation.arithmetic_findings``.
+    """
+    from .validation import arithmetic_findings
+    return [item["message"] for item in arithmetic_findings(record, precision, tolerance)]
 
 
 def validation_outcome(record: dict, warnings: list, diagnostics: Optional[dict] = None) -> tuple[str, list]:

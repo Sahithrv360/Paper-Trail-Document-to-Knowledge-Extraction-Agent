@@ -44,6 +44,16 @@ def _value(record: dict, path: tuple):
     return value
 
 
+def _unlabelled(gold) -> bool:
+    """No label: null, an empty list, or a list whose entries are all null.
+
+    The last case covers item fields the dataset never labels (for example line VAT
+    amounts), which must not be scored as if null were the expected answer.
+    """
+    return gold is None or gold == [] or (isinstance(gold, list)
+                                          and all(item is None for item in gold))
+
+
 def _normalized(value):
     if isinstance(value, str):
         return " ".join(value.split()).casefold()
@@ -73,7 +83,7 @@ def evaluate_predictions(rows: list[dict]) -> dict:
         example_scored = False
         for field, path in FIELD_PATHS.items():
             gold = _value(expected, path)
-            if gold is None or gold == []:
+            if _unlabelled(gold):
                 continue
             example_scored = True
             prediction = _value(predicted, path)
@@ -116,7 +126,7 @@ def evaluate_examples(rows: list[dict]) -> list[dict]:
         for field, path in FIELD_PATHS.items():
             gold = _value(expected, path)
             guess = _value(predicted, path)
-            scored = gold is not None and gold != []
+            scored = not _unlabelled(gold)
             fields[field] = {
                 "scored": scored,
                 "expected": gold,
@@ -139,7 +149,12 @@ def item_prf(predicted_items: list, expected_items: list) -> dict:
     agree; each expected item can be matched at most once (greedy, order-independent).
     """
     def key(item):
-        amount = item.get("amount")
+        # Printed gross line amount when present; otherwise the deprecated `amount`
+        # (historical gross-first value), so OCR/API providers are not penalised for
+        # not emitting the legacy field.
+        amount = item.get("gross_amount")
+        if amount is None:
+            amount = item.get("amount")
         return (_normalized(item.get("description")),
                 None if amount is None else round(float(amount), 2))
 

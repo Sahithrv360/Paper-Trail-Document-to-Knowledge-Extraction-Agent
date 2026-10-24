@@ -36,11 +36,17 @@ class DocumentRegistry:
                 );
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+            if "claimed_at" not in columns:  # additive, repeatable migration
+                connection.execute("ALTER TABLE jobs ADD COLUMN claimed_at TEXT")
 
     @contextmanager
     def _connect(self):
         connection = sqlite3.connect(self.database_path, timeout=10)
         connection.row_factory = sqlite3.Row
+        # WAL lets the watcher read while a job or review writes; writers still serialize.
+        if connection.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+            connection.execute("PRAGMA journal_mode=WAL")
         try:
             with connection:
                 yield connection
@@ -209,7 +215,8 @@ class DocumentRegistry:
             if row is None:
                 return None
             connection.execute(
-                "UPDATE jobs SET status='processing', attempts=attempts+1 WHERE job_id=?",
+                "UPDATE jobs SET status='processing', attempts=attempts+1, "
+                "claimed_at=CURRENT_TIMESTAMP WHERE job_id=?",
                 (row["job_id"],),
             )
             if row["action"] in {"process", "reprocess"}:
@@ -240,6 +247,34 @@ class DocumentRegistry:
                     "WHERE document_id=? AND content_hash=? AND status!='deleted'",
                     (row["document_id"], row["content_hash"]),
                 )
+
+    def recover_interrupted_jobs(self, max_attempts: int = 3,
+                                 older_than_seconds: float = None) -> int:
+        """Return jobs left in ``processing`` by a crash to the queue (or fail them).
+
+        With a single worker, every ``processing`` job at start-up was interrupted. With
+        ``older_than_seconds`` only claims older than that are recovered.
+        """
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            query = "SELECT * FROM jobs WHERE status='processing'"
+            args = ()
+            if older_than_seconds is not None:
+                query += (" AND (claimed_at IS NULL OR "
+                          "claimed_at <= datetime('now', ?))")
+                args = (f"-{int(older_than_seconds)} seconds",)
+            rows = connection.execute(query, args).fetchall()
+            for row in rows:
+                next_status = "queued" if row["attempts"] < max_attempts else "failed"
+                error = "interrupted while processing (recovered at start-up)"
+                connection.execute("UPDATE jobs SET status=?, last_error=? WHERE job_id=?",
+                                   (next_status, error, row["job_id"]))
+                if row["action"] in {"process", "reprocess"}:
+                    connection.execute(
+                        "UPDATE documents SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP "
+                        "WHERE document_id=? AND content_hash=? AND status='processing'",
+                        (next_status, error, row["document_id"], row["content_hash"]))
+            return len(rows)
 
     def fail_job(self, job_id: int, error: str, max_attempts: int = 3) -> str:
         """Persist a failure and return it to the queue until attempts are exhausted."""

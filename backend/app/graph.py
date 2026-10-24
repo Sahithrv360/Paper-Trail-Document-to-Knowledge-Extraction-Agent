@@ -1,131 +1,271 @@
-"""SQLite knowledge-graph store with per-document support and idempotent sync.
+"""SQLite knowledge graph materialized from a per-document source ledger.
 
-Nodes/edges exist only while at least one (document_id, content_hash) supports them.
-Re-syncing the same version is a no-op; a new version replaces only that document's
-support; deleting a document never removes entities still supported by another.
-Entities merge only on exact normalized keys (never fuzzy name similarity).
+Public API (compatible with the original store, extended for Milestone 1):
+
+* ``sync`` applies one validated extraction for a document version. Re-syncing the
+  same version is a no-op; a new version supersedes (never deletes) the previous
+  extraction and replaces only that document's support.
+* ``remove_document`` withdraws one document's support; shared entities survive while
+  another document supports them.
+* ``apply_review`` records a human decision (append-only) and re-derives that
+  document's support with the reviewed status in the same transaction.
+* ``export(reviewed_only=...)`` returns typed nodes/edges with per-source support and
+  review state; ``changes`` returns the graph-change ledger.
+
+Invariant: the ``nodes``/``edges`` tables always equal the union of the active claims
+of all non-removed documents (``rebuild_graph`` recomputes and reports any drift).
+Entities merge only on exact match keys; there is no fuzzy merging.
 """
 
-import hashlib
 import json
-import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS nodes (node_id TEXT PRIMARY KEY, type TEXT NOT NULL, props TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS edges (edge_id TEXT PRIMARY KEY, type TEXT NOT NULL,
-    src TEXT NOT NULL, dst TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS support (document_id TEXT NOT NULL, content_hash TEXT NOT NULL,
-    kind TEXT NOT NULL, ref_id TEXT NOT NULL, evidence TEXT,
-    PRIMARY KEY (document_id, kind, ref_id));
-CREATE TABLE IF NOT EXISTS synced (document_id TEXT PRIMARY KEY, content_hash TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS extractions (document_id TEXT PRIMARY KEY, content_hash TEXT NOT NULL,
-    record TEXT NOT NULL, warnings TEXT NOT NULL);
-"""
+from .extraction.evidence import raw_sources, record_values
+from .graph_ontology import SHARED_NODE_TYPES, build_claims, canonical_json
+from .extraction.matching import name_key, tax_id_key
+from .ledger import (REVIEWED_STATUSES, compute_graph, connect, deactivate_claims, diff,
+                     insert_claims, materialize_all, materialize_refs, migrate, now,
+                     record_change, snapshot, snapshot_all, write)
 
 
-def _key(*parts) -> str:
-    text = "|".join(" ".join(str(p).split()).casefold() for p in parts)
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+class ReviewedExtractionConflict(RuntimeError):
+    """Prevents an unattended run from superseding a human-reviewed record."""
 
 
 class GraphStore:
     def __init__(self, path):
         self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
-            db.executescript(_SCHEMA)
+            migrate(db, self._claims_for)
 
     @contextmanager
     def _db(self):
-        db = sqlite3.connect(self.path, timeout=10)
-        db.row_factory = sqlite3.Row
+        db = connect(self.path)
         try:
-            with db:
-                yield db
+            yield db
         finally:
             db.close()
 
     @staticmethod
-    def _build(document_id, content_hash, record, filename):
-        nodes, edges = {}, []
+    def _claims_for(document_id, content_hash, version, record, filename, review_status):
+        return build_claims(document_id, content_hash, version, record, filename, review_status)
 
-        def node(kind, key, **props):
-            nid = f"{kind}:{key}"
-            nodes[nid] = (kind, props)
-            return nid
+    @staticmethod
+    def _active(db, document_id):
+        return db.execute("SELECT * FROM extraction_versions WHERE document_id=? AND "
+                          "state='active'", (document_id,)).fetchone()
 
-        doc = node("Document", document_id, document_id=document_id,
-                   content_hash=content_hash, filename=filename)
-        inv = node("Invoice", f"{document_id}:{_key(record.get('invoice_number'))}",
-                   invoice_number=record.get("invoice_number"),
-                   invoice_date=record.get("invoice_date"),
-                   subtotal=record.get("subtotal"), tax_amount=record.get("tax_amount"),
-                   total_amount=record.get("total_amount"), currency=record.get("currency"),
-                   review_status=record.get("review_status"))
-        edges.append(("SUPPORTS", doc, inv))
-        for role, kind, edge in (("vendor", "Vendor", "ISSUED"), ("customer", "Customer", "BILLED_TO")):
-            party = record.get(role) or {}
-            if not party.get("name"):
-                continue  # unknown party: no node rather than an invented one
-            pid = node(kind, _key(party["name"], party.get("tax_id") or ""), **party)
-            edges.append((edge, pid, inv) if role == "vendor" else (edge, inv, pid))
-        for index, item in enumerate(record.get("items") or []):
-            lid = node("LineItem", f"{document_id}:{index}", position=index, **item)
-            edges.append(("CONTAINS", inv, lid))
-        return nodes, edges
+    def _apply_claims(self, db, extraction_id, document_id, content_hash, version, record,
+                      filename, review_status) -> dict:
+        """Swap one document's active claims and re-materialize only what they touch."""
+        old_refs = deactivate_claims(db, document_id)
+        claims = self._claims_for(document_id, content_hash, version, record, filename,
+                                  review_status)
+        refs = old_refs | insert_claims(db, extraction_id, document_id, content_hash, version,
+                                        claims, review_status)
+        before = snapshot(db, refs)
+        self._materialize_refs(db, refs)
+        return diff(before, snapshot(db, refs))
+
+    def _materialize_refs(self, db, refs) -> None:  # separate method so tests can inject faults
+        materialize_refs(db, refs)
+
+    # --- Writes ------------------------------------------------------------------------
 
     def sync(self, document_id: str, content_hash: str, record: dict,
              filename: str = "", evidence: dict = None, warnings: list = None,
              allow_reviewed_replace: bool = False,
-             allow_same_version_replace: bool = False) -> bool:
-        """Apply a validated record. Returns False if this exact version was already synced."""
-        with self._db() as db:
-            row = db.execute("SELECT content_hash FROM synced WHERE document_id=?",
-                             (document_id,)).fetchone()
-            if row and row["content_hash"] == content_hash and not allow_same_version_replace:
+             allow_same_version_replace: bool = False, version=None,
+             run_id: str = None) -> bool:
+        """Apply a validated record. Returns False when nothing changed.
+
+        The stored machine extraction is always ``needs_review``; only ``apply_review``
+        can record an approval or correction.
+        """
+        provenance = record.get("provenance") or {}
+        version = version if version is not None else provenance.get("version")
+        machine = dict(record, review_status="needs_review")
+        record_json = canonical_json(machine)
+        with self._db() as db, write(db):
+            active = self._active(db, document_id)
+            if active and active["content_hash"] == content_hash and not allow_same_version_replace:
                 return False
-            previous = db.execute("SELECT record FROM extractions WHERE document_id=?",
-                                  (document_id,)).fetchone()
-            if previous and not allow_reviewed_replace:
-                previous_record = json.loads(previous["record"])
-                if previous_record.get("review_status") in {"approved", "corrected"}:
-                    raise ReviewedExtractionConflict(
-                        f"Document {document_id} has a reviewed extraction; explicitly "
-                        "allow replacement after review."
-                    )
-            self._drop_support(db, document_id)
-            nodes, edges = self._build(document_id, content_hash, record, filename)
-            ev = json.dumps(evidence or record.get("provenance") or {}, sort_keys=True)
-            for nid, (kind, props) in nodes.items():
-                db.execute("INSERT OR REPLACE INTO nodes VALUES (?,?,?)",
-                           (nid, kind, json.dumps(props, sort_keys=True)))
-                db.execute("INSERT OR REPLACE INTO support VALUES (?,?,?,?,?)",
-                           (document_id, content_hash, "node", nid, ev))
-            for kind, src, dst in edges:
-                eid = f"{src}-{kind}->{dst}"
-                db.execute("INSERT OR REPLACE INTO edges VALUES (?,?,?,?)", (eid, kind, src, dst))
-                db.execute("INSERT OR REPLACE INTO support VALUES (?,?,?,?,?)",
-                           (document_id, content_hash, "edge", eid, ev))
-            db.execute("INSERT OR REPLACE INTO extractions VALUES (?,?,?,?)",
-                       (document_id, content_hash, json.dumps(record, sort_keys=True),
-                        json.dumps(warnings or [])))
-            db.execute("INSERT OR REPLACE INTO synced VALUES (?,?)", (document_id, content_hash))
+            if active and active["review_status"] in REVIEWED_STATUSES and not allow_reviewed_replace:
+                raise ReviewedExtractionConflict(
+                    f"Document {document_id} has a reviewed extraction; explicitly "
+                    "allow replacement after review.")
+            origin = {"provider": provenance.get("provider"),
+                      "model_revision": provenance.get("model_revision"),
+                      "prompt_version": provenance.get("prompt_version")}
+            if (active and active["content_hash"] == content_hash
+                    and active["record"] == record_json):
+                # Explicit same-version rerun produced an identical extraction.
+                record_change(db, "unchanged", diff({}, {}), run_id=run_id,
+                              document_id=document_id, content_hash=content_hash,
+                              version=version, extraction_id=active["extraction_id"], **origin)
+                return False
+            timestamp = now()
+            cursor = None
+            if active:
+                db.execute("UPDATE extraction_versions SET state='superseded', ended_at=? "
+                           "WHERE extraction_id=?", (timestamp, active["extraction_id"]))
+            cursor = db.execute(
+                "INSERT INTO extraction_versions(document_id, content_hash, version, source_file, "
+                "record, warnings, validation_status, review_status, state, provider, "
+                "model_revision, prompt_version, run_id, sync_evidence, created_at) "
+                "VALUES (?,?,?,?,?,?,?, 'needs_review', 'active', ?,?,?,?,?,?)",
+                (document_id, content_hash, version, filename, record_json,
+                 json.dumps(warnings or []), record.get("validation_status"),
+                 origin["provider"], origin["model_revision"], origin["prompt_version"],
+                 run_id, canonical_json(evidence) if evidence is not None else None, timestamp))
+            extraction_id = cursor.lastrowid
+            if active:
+                db.execute("UPDATE extraction_versions SET superseded_by=? WHERE extraction_id=?",
+                           (extraction_id, active["extraction_id"]))
+            change = self._apply_claims(db, extraction_id, document_id, content_hash, version,
+                                        machine, filename, "needs_review")
+            record_change(db, "update" if active else "create", change, run_id=run_id,
+                          document_id=document_id, content_hash=content_hash, version=version,
+                          extraction_id=extraction_id, **origin)
         return True
 
-    def remove_document(self, document_id: str) -> None:
-        with self._db() as db:
-            self._drop_support(db, document_id)
-            db.execute("DELETE FROM synced WHERE document_id=?", (document_id,))
-            db.execute("DELETE FROM extractions WHERE document_id=?", (document_id,))
+    def remove_document(self, document_id: str, run_id: str = None) -> bool:
+        """Withdraw this document's support. Its extraction history is retained."""
+        with self._db() as db, write(db):
+            active = self._active(db, document_id)
+            if active is None:
+                return False
+            db.execute("UPDATE extraction_versions SET state='removed', ended_at=? "
+                       "WHERE extraction_id=?", (now(), active["extraction_id"]))
+            refs = deactivate_claims(db, document_id)
+            before = snapshot(db, refs)
+            self._materialize_refs(db, refs)
+            record_change(db, "delete", diff(before, snapshot(db, refs)), run_id=run_id,
+                          document_id=document_id, content_hash=active["content_hash"],
+                          version=active["version"], extraction_id=active["extraction_id"],
+                          provider=active["provider"], model_revision=active["model_revision"],
+                          prompt_version=active["prompt_version"])
+        return True
+
+    def apply_review(self, document_id: str, decision: str, corrected_record: dict = None,
+                     reviewer: str = None, note: str = None, run_id: str = None) -> dict:
+        """Record a human review and update that document's graph support atomically.
+
+        ``approved`` accepts the current effective record (the machine extraction, or
+        the active correction if an earlier review corrected it). ``corrected`` stores
+        the reviewer's full corrected record beside (never over) the machine extraction.
+        A later review of the same extraction supersedes, but does not erase, this one.
+        """
+        if decision not in REVIEWED_STATUSES:
+            raise ValueError("review decision must be 'approved' or 'corrected'")
+        if decision == "approved" and corrected_record is not None:
+            raise ValueError("an approval cannot carry corrections; use 'corrected'")
+        if decision == "corrected" and not isinstance(corrected_record, dict):
+            raise ValueError("a correction requires the full corrected record")
+        with self._db() as db, write(db):
+            active = self._active(db, document_id)
+            if active is None:
+                raise KeyError(document_id)
+            machine = json.loads(active["record"])
+            if decision == "approved":
+                # Approval accepts the *current* effective record: a correction made by an
+                # earlier review of this extraction is carried forward, not discarded.
+                prior = db.execute("SELECT corrected_record FROM reviews WHERE extraction_id=? "
+                                   "AND state='active' ORDER BY review_id DESC LIMIT 1",
+                                   (active["extraction_id"],)).fetchone()
+                carried = prior["corrected_record"] if prior else None
+                effective = json.loads(carried) if carried else machine
+                stored_correction = carried
+            else:
+                effective = self._validated_correction(machine, corrected_record)
+                stored_correction = canonical_json(effective)
+            timestamp = now()
+            db.execute("UPDATE reviews SET state='superseded' WHERE extraction_id=? AND "
+                       "state='active'", (active["extraction_id"],))
+            cursor = db.execute(
+                "INSERT INTO reviews(extraction_id, document_id, decision, reviewer, note, "
+                "corrected_record, state, created_at) VALUES (?,?,?,?,?,?,'active',?)",
+                (active["extraction_id"], document_id, decision, reviewer, note,
+                 stored_correction, timestamp))
+            db.execute("UPDATE extraction_versions SET review_status=? WHERE extraction_id=?",
+                       (decision, active["extraction_id"]))
+            change = self._apply_claims(db, active["extraction_id"], document_id,
+                                        active["content_hash"], active["version"],
+                                        dict(effective, review_status=decision),
+                                        active["source_file"] or "", decision)
+            record_change(db, "review", change, run_id=run_id, document_id=document_id,
+                          content_hash=active["content_hash"], version=active["version"],
+                          extraction_id=active["extraction_id"], provider=active["provider"],
+                          model_revision=active["model_revision"],
+                          prompt_version=active["prompt_version"])
+        return {"review_id": cursor.lastrowid, "extraction_id": active["extraction_id"],
+                "change": change}
+
+    def mark_reviewed(self, document_id: str, status: str) -> None:
+        """Compatibility wrapper. Prefer ``apply_review`` with explicit corrections."""
+        if status not in REVIEWED_STATUSES:
+            raise ValueError("review status must be 'approved' or 'corrected'")
+        if status == "approved":
+            self.apply_review(document_id, "approved")
+            return
+        current = self.get_extraction(document_id)
+        if current is None:
+            raise KeyError(document_id)
+        self.apply_review(document_id, "corrected", current["effective_record"],
+                          note="mark_reviewed('corrected'): corrected values not supplied")
+
+    @staticmethod
+    def _validated_correction(machine: dict, corrected: dict) -> dict:
+        """Validate a reviewer's record; keep machine evidence only for unchanged values."""
+        from .extraction.schema import record_from_canonical
+        from .extraction.validation import status_from_findings, structured_findings
+
+        record = record_from_canonical(corrected, machine.get("provenance") or {}).to_dict()
+        old_values, new_values = record_values(machine), record_values(record)
+        old_evidence = machine.get("field_evidence") or {}
+        typed = raw_sources(corrected, donut_style=False)
+        evidence = {}
+        for path, value in new_values.items():
+            if value is None:
+                continue
+            if path in old_evidence and old_values.get(path) == value:
+                evidence[path] = old_evidence[path]
+            else:
+                raw = typed.get(path)
+                evidence[path] = {"raw_text": raw if isinstance(raw, str) else None,
+                                  "raw_type": None if raw is None else type(raw).__name__,
+                                  "value": value, "page": None, "quote": None, "bbox": None,
+                                  "method": "human", "match": {}}
+        findings = structured_findings(record)
+        record.update(field_evidence=evidence, findings=findings,
+                      validation_status=status_from_findings(findings),
+                      review_reasons=[item["message"] for item in findings],
+                      provenance=dict(machine.get("provenance") or {}, corrected_by_review=True))
+        return record
+
+    def rebuild_graph(self, run_id: str = None) -> dict:
+        """Recompute the whole graph from active claims; returns (and logs) any drift."""
+        with self._db() as db, write(db):
+            before = snapshot_all(db)
+            materialize_all(db)
+            change = diff(before, snapshot_all(db))
+            if any(change.values()):
+                record_change(db, "rebuild", change, run_id=run_id)
+        return change
+
+    # --- Reads -------------------------------------------------------------------------
 
     def get_extraction(self, document_id: str):
-        """The last valid extraction for a document (record + warnings), or None."""
+        """The active extraction (machine record + latest review), or None."""
         with self._db() as db:
-            row = db.execute("SELECT * FROM extractions WHERE document_id=?",
-                             (document_id,)).fetchone()
-        if row is None:
-            return None
+            row = self._active(db, document_id)
+            if row is None:
+                return None
+            review = db.execute("SELECT * FROM reviews WHERE extraction_id=? AND state='active' "
+                                "ORDER BY review_id DESC LIMIT 1",
+                                (row["extraction_id"],)).fetchone()
         record = json.loads(row["record"])
         # Non-destructive read compatibility: old JSON rows retain their original
         # `amount` untouched; the new fields are exposed as unknown until re-extracted.
@@ -138,53 +278,137 @@ class GraphStore:
                 item.setdefault("amount_semantics", "unknown")
         record.setdefault("validation_status", "incomplete_extraction")
         record.setdefault("review_reasons", ["Legacy extraction has no explicit validation outcome."])
+        record["review_status"] = row["review_status"]
+        review = _review_dict(review)
+        effective = (review["corrected_record"] if review and review["corrected_record"]
+                     else record)
         return {"document_id": document_id, "content_hash": row["content_hash"],
-                "record": record, "warnings": json.loads(row["warnings"])}
+                "record": record, "warnings": json.loads(row["warnings"]),
+                "extraction_id": row["extraction_id"], "version": row["version"],
+                "review_status": row["review_status"],
+                "validation_status": row["validation_status"],
+                "review": review, "effective_record": effective}
 
-    def mark_reviewed(self, document_id: str, status: str) -> None:
-        """Persist a review decision; reprocessing then requires explicit replacement."""
-        if status not in {"approved", "corrected"}:
-            raise ValueError("review status must be 'approved' or 'corrected'")
+    def extraction_history(self, document_id: str) -> list:
+        """Every extraction version for a document, oldest first, with its reviews."""
         with self._db() as db:
-            row = db.execute("SELECT record FROM extractions WHERE document_id=?",
-                             (document_id,)).fetchone()
-            if row is None:
-                raise KeyError(document_id)
-            record = json.loads(row["record"])
-            record["review_status"] = status
-            db.execute("UPDATE extractions SET record=? WHERE document_id=?",
-                       (json.dumps(record, sort_keys=True), document_id))
+            versions = db.execute("SELECT * FROM extraction_versions WHERE document_id=? "
+                                  "ORDER BY extraction_id", (document_id,)).fetchall()
+            reviews = db.execute("SELECT * FROM reviews WHERE document_id=? ORDER BY review_id",
+                                 (document_id,)).fetchall()
+        history = []
+        for row in versions:
+            item = {key: row[key] for key in row.keys() if key not in ("record", "sync_evidence")}
+            item["record"] = json.loads(row["record"])
+            item["reviews"] = [_review_dict(review) for review in reviews
+                               if review["extraction_id"] == row["extraction_id"]]
+            history.append(item)
+        return history
 
-    @staticmethod
-    def _drop_support(db, document_id):
-        db.execute("DELETE FROM support WHERE document_id=?", (document_id,))
-        db.execute("DELETE FROM edges WHERE edge_id NOT IN "
-                   "(SELECT ref_id FROM support WHERE kind='edge')")
-        db.execute("DELETE FROM nodes WHERE node_id NOT IN "
-                   "(SELECT ref_id FROM support WHERE kind='node')")
-
-    def export(self) -> dict:
-        """Deterministic JSON nodes/edges with supporting documents, for a UI to consume."""
+    def synced_documents(self) -> list:
+        """Every document known to the graph: latest hash/version, state, review, last sync."""
         with self._db() as db:
-            sup = {}
-            for r in db.execute("SELECT document_id, content_hash, kind, ref_id FROM support"):
-                sup.setdefault((r["kind"], r["ref_id"]), []).append(
-                    {"document_id": r["document_id"], "content_hash": r["content_hash"]})
-            nodes = []
-            for r in db.execute("SELECT * FROM nodes ORDER BY node_id"):
-                props = json.loads(r["props"])
-                if r["type"] == "LineItem":
-                    for key in ("net_amount", "vat_amount", "gross_amount"):
-                        props.setdefault(key, None)
-                    if props.get("amount") is not None:
-                        props.setdefault("amount_semantics", "unknown")
-                nodes.append({"id": r["node_id"], "type": r["type"], "props": props,
-                              "support": sorted(sup.get(("node", r["node_id"]), []), key=str)})
-            edges = [{"id": r["edge_id"], "type": r["type"], "source": r["src"], "target": r["dst"],
-                      "support": sorted(sup.get(("edge", r["edge_id"]), []), key=str)}
-                     for r in db.execute("SELECT * FROM edges ORDER BY edge_id")]
-        return {"nodes": nodes, "edges": edges}
+            rows = db.execute(
+                "SELECT e.document_id, e.extraction_id, e.content_hash, e.version, e.source_file, "
+                "e.state, e.review_status, e.validation_status, e.provider, e.model_revision, "
+                "(SELECT MAX(created_at) FROM graph_changes c WHERE c.document_id = e.document_id) "
+                "AS last_synced_at "
+                "FROM extraction_versions e WHERE e.extraction_id = (SELECT MAX(extraction_id) "
+                "FROM extraction_versions x WHERE x.document_id = e.document_id) "
+                "ORDER BY e.document_id").fetchall()
+        return [dict(row) for row in rows]
+
+    def changes(self, document_id: str = None) -> list:
+        query = "SELECT * FROM graph_changes"
+        args = ()
+        if document_id is not None:
+            query, args = query + " WHERE document_id=?", (document_id,)
+        with self._db() as db:
+            rows = db.execute(query + " ORDER BY change_id", args).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            for key in ("nodes_added", "nodes_updated", "nodes_removed",
+                        "edges_added", "edges_updated", "edges_removed"):
+                item[key] = json.loads(item[key])
+            result.append(item)
+        return result
+
+    def export(self, reviewed_only: bool = False) -> dict:
+        """Deterministic JSON nodes/edges with per-source support and review state.
+
+        ``reviewed_only`` builds the graph from reviewed support alone, so entity merges
+        and facts asserted only by unreviewed extractions are excluded.
+        """
+        with self._db() as db:
+            claim_rows = db.execute(
+                "SELECT * FROM claims WHERE active=1 "
+                "ORDER BY kind, ref_id, document_id, extraction_id, claim_id").fetchall()
+            if reviewed_only:
+                claim_rows = [row for row in claim_rows
+                              if row["review_status"] in REVIEWED_STATUSES]
+                nodes, edges = compute_graph(claim_rows)
+            else:
+                nodes = {row["node_id"]: (row["type"], json.loads(row["props"]))
+                         for row in db.execute("SELECT * FROM nodes")}
+                edges = {row["edge_id"]: (row["type"], row["src"], row["dst"],
+                                          json.loads(row["props"]))
+                         for row in db.execute("SELECT * FROM edges")}
+        support = {}
+        for row in claim_rows:
+            support.setdefault((row["kind"], row["ref_id"]), []).append(
+                {"document_id": row["document_id"], "content_hash": row["content_hash"],
+                 "version": row["version"], "extraction_id": row["extraction_id"],
+                 "review_status": row["review_status"]})
+        node_list = []
+        for nid in sorted(nodes):
+            node_type, props = nodes[nid]
+            if node_type == "LineItem":
+                for key in ("net_amount", "vat_amount", "gross_amount"):
+                    props.setdefault(key, None)
+                if props.get("amount") is not None:
+                    props.setdefault("amount_semantics", "unknown")
+            node_list.append({"id": nid, "type": node_type, "props": props,
+                              "support": sorted(support.get(("node", nid), []), key=str)})
+        edge_list = [{"id": eid, "type": edges[eid][0], "source": edges[eid][1],
+                      "target": edges[eid][2], "props": edges[eid][3],
+                      "support": sorted(support.get(("edge", eid), []), key=str)}
+                     for eid in sorted(edges)]
+        return {"nodes": node_list, "edges": edge_list}
+
+    def entity_suggestions(self) -> list:
+        """Possible same-entity pairs for a reviewer. Never merged automatically."""
+        groups = {}
+        for node in self.export()["nodes"]:
+            if node["type"] not in SHARED_NODE_TYPES:
+                continue
+            props = node["props"]
+            for reason, key in (("same_name_different_tax_id", name_key(props.get("name"))),
+                                ("same_tax_id_different_name", tax_id_key(props.get("tax_id")))):
+                if key:
+                    groups.setdefault((reason, node["type"], key), []).append(node["id"])
+        return [{"reason": reason, "type": node_type, "node_ids": sorted(ids)}
+                for (reason, node_type, _key), ids in sorted(groups.items()) if len(ids) > 1]
+
+    def duplicate_content_groups(self) -> list:
+        """Active documents whose bytes are identical (distinct paths stay distinct)."""
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT content_hash, document_id, source_file FROM extraction_versions "
+                "WHERE state='active' AND content_hash IN (SELECT content_hash FROM "
+                "extraction_versions WHERE state='active' GROUP BY content_hash "
+                "HAVING COUNT(*) > 1) ORDER BY content_hash, document_id").fetchall()
+        groups = {}
+        for row in rows:
+            groups.setdefault(row["content_hash"], []).append(
+                {"document_id": row["document_id"], "source_file": row["source_file"]})
+        return [{"content_hash": key, "documents": value} for key, value in groups.items()]
 
 
-class ReviewedExtractionConflict(RuntimeError):
-    """Prevents an unattended run from overwriting a human-reviewed record."""
+def _review_dict(row):
+    if row is None:
+        return None
+    review = dict(row)
+    review["corrected_record"] = (json.loads(review["corrected_record"])
+                                  if review["corrected_record"] else None)
+    return review

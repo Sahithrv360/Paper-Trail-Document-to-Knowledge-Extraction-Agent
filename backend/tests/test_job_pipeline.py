@@ -179,12 +179,14 @@ class JobPipelineTests(unittest.TestCase):
         self.assertIn("skipped_restored", [r["outcome"] for r in results])
         self.assertEqual(len(self.types("Invoice")), 1)
 
-    def test_pdf_is_a_permanent_failure_without_retries(self):
+    def test_unreadable_pdf_is_a_permanent_failure_without_retries(self):
+        # PDFs are supported when the optional pypdfium2 extra is installed; a corrupt
+        # PDF (or a missing extra) fails once, permanently, before the provider runs.
         (self.input / "a.pdf").write_bytes(b"pdf")
         self.settle()
         results = self.processor([]).process_pending()
         self.assertEqual([r["outcome"] for r in results], ["failed"])
-        self.assertIn("not implemented", results[0]["error"])
+        self.assertIn("PDF", results[0]["error"])
         self.assertEqual(self.provider.calls, [])
         self.assertEqual(self.graph.export(), {"nodes": [], "edges": []})
 

@@ -1,0 +1,3 @@
+# PDF input: embedded text layer first, rendering of scanned pages for OCR/vision.
+pypdfium2>=4.30,<6
+Pillow>=11,<14

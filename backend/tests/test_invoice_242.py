@@ -16,7 +16,7 @@ INVOICE_242 = {
                "address": "6637 Mack Junction Apt. 855\nEricport, AR 84395",
                "tax_id": "907-77-4589"},
     "customer": {"name": "Chavez-Wilcox",
-                 "address": "7844 Corlson Expressway\nSouth Edwinborough, PA 19234",
+                 "address": "7844 Carlson Expressway\nSouth Edwinborough, PA 19234",
                  "tax_id": "910-70-6111", "phone": None, "email": None},
     "bank_account_iban": "GB02TRCS19981598057841",
     "currency": None,
@@ -51,7 +51,7 @@ class Invoice242RegressionTests(unittest.TestCase):
                          "6637 Mack Junction Apt. 855\nEricport, AR 84395")
         self.assertEqual(record["customer"]["name"], "Chavez-Wilcox")
         self.assertEqual(record["customer"]["address"],
-                         "7844 Corlson Expressway\nSouth Edwinborough, PA 19234")
+                         "7844 Carlson Expressway\nSouth Edwinborough, PA 19234")
         self.assertEqual(record["bank_account_iban"], "GB02TRCS19981598057841")
         self.assertIsNone(record["currency"])
         self.assertEqual(len(record["items"]), 4)
@@ -91,8 +91,12 @@ class Invoice242RegressionTests(unittest.TestCase):
             {"item_desc": "Book", "item_qty": "2", "item_net_price": "3,00",
              "item_net_worth": "6,00", "item_vat": "10%", "item_gross_worth": "6,60"}
         ]}}).to_dict()["items"][0]
+        # Line VAT is not printed: it stays null. gross - net is kept apart for checks only.
         self.assertEqual((result["net_amount"], result["vat_amount"], result["gross_amount"]),
-                         (6.0, 0.6, 6.6))
+                         (6.0, None, 6.6))
+        self.assertAlmostEqual(result["derived"]["vat_amount"]["value"], 0.6)
+        self.assertEqual(result["derived"]["vat_amount"]["use"], "validation_only")
+        self.assertEqual(result["field_origins"]["vat_amount"], "not_printed")
         self.assertEqual(result["amount"], 6.6)  # legacy field keeps its prior gross-first rule
         self.assertEqual(result["amount_semantics"], "gross")
 

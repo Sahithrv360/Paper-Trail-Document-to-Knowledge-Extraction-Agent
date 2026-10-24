@@ -1,0 +1,5 @@
+# Optional local OCR preview dependencies. Kept separate from Donut requirements.
+paddlepaddle==3.3.1
+paddleocr[doc-parser]==3.7.0
+Pillow>=11,<13
+numpy>=1.24,<3

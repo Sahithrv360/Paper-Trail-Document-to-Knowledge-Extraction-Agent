@@ -4,7 +4,7 @@ Paper Trail is a capstone project focused on extracting structured, evidence-bac
 
 Instead of treating OCR or PDF text extraction as the final result, the system aims to identify entities, relationships, and business facts, connect them to existing master records only when supported by evidence, and flag ambiguous cases for human review.
 
-> **Project status:** A local JPG/PNG watcher-to-Donut-to-SQLite-graph slice is implemented and covered by 47 unit tests. Real extraction quality on the supplied invoice is still unresolved; OCR/PDF support, usable field evidence/confidence, RAG evaluation, and a graph UI are not implemented.
+> **Project status:** The local pipeline supports bounded image/PDF input, Tesseract or RapidOCR extraction, Donut, and an explicitly opt-in vision API; it validates evidence, stores versioned records in a SQLite ledger, syncs a deterministic graph, and provides a local review page and benchmark harness. The 147-test suite passes here (2 optional Tesseract tests skipped); dataset accuracy has not been evaluated. See [`docs/MILESTONES_REPORT.md`](./docs/MILESTONES_REPORT.md) for scope and limits.
 
 ## Problem Statement
 
@@ -149,6 +149,29 @@ python -m backend.app.extraction.evaluate --split test --limit 5 --device cpu
 
 The evaluator selects deterministic, evenly spaced local rows and writes aggregate metrics plus per-file field comparisons to `reports/donut-baseline.json` and `reports/donut-baseline.md`. Run `--limit 26` to evaluate all test images. Use validation data when experimenting with improvements and keep test data for final evaluation. Do not copy dataset invoices into `watched/`. The model does not provide field evidence or confidence, and dataset party labels combine names with addresses; unavailable fields remain null and results require review.
 
+### PaddleOCR Text and Table Preview
+
+PaddleOCR is an optional OCR path for inspecting a local invoice image. It writes recognized lines, recognizer scores, geometry, table output, and layout blocks to JSON. It does not map text to invoice fields, update the graph, or produce an accuracy score. Install it separately from Donut:
+
+```powershell
+python -m pip install -r backend/requirements-paddleocr.txt
+python -m backend.app.extraction.paddle_ocr --image backend/tests/fixtures/invoice-242.jpg --device cpu
+```
+
+The first run downloads PaddleOCR models. The default report is `reports/paddleocr/invoice-242.json` (reports are git-ignored). CPU mode disables MKL-DNN to avoid a known class of Windows oneDNN inference failures. OCR recognition scores are not invoice-field confidence. PP-StructureV3 is not used by the pipeline; the lighter Tesseract/RapidOCR paths should be used for mapped extraction.
+
+### Local OCR, PDF, review, and benchmark
+
+For the bounded OCR pipeline, install Tesseract separately, then install optional Python requirements. The PDF extra enables digital text extraction and scanned-page rendering:
+
+```powershell
+python -m pip install -r backend/requirements-ocr.txt -r backend/requirements-pdf.txt
+python -m backend.app.extract_one backend/tests/fixtures/invoice-242.jpg --provider ocr
+python -m backend.app.review.server
+```
+
+The review server binds to `127.0.0.1`; keep its one-time link private. Copy `.env.example` to `.env` to configure limits and providers. Queue-only remains the default. For labeled evaluation, use `backend.app.extraction.benchmark` and the validation split first; reserve the test split for a frozen, one-time final run. See [`docs/EVALUATION.md`](./docs/EVALUATION.md) and [`docs/DATA_HANDLING.md`](./docs/DATA_HANDLING.md). No accuracy improvement is established until that evaluation runs.
+
 ## Example Expected Behaviour
 
 ### Ambiguous Entity Linking
@@ -186,7 +209,14 @@ Evaluation results will be added only after repeatable runs against labelled dat
 ## Documentation
 
 - [`docs/functional.md`](./docs/functional.md) — requirements and acceptance criteria.
-- [`APPROACH.md`](./APPROACH.md) — system design, data, evaluation, and risks.
+- [`docs/DATA_CONTRACTS.md`](./docs/DATA_CONTRACTS.md) — extraction, evidence, ledger, and graph contracts.
+- [`docs/DATA_HANDLING.md`](./docs/DATA_HANDLING.md) — local/remote processing and privacy controls.
+- [`docs/EVALUATION.md`](./docs/EVALUATION.md) — benchmark workflow and metric definitions.
+- [`docs/MILESTONES_REPORT.md`](./docs/MILESTONES_REPORT.md) — delivered milestones and unrun evaluation work.
+- [`APPROACH.md`](./APPROACH.md) — target users, build-versus-reuse decisions, architecture, UX sketch, and approach.
+- [`docs/build-plan.md`](./docs/build-plan.md) — phased implementation sequence and exit evidence.
+- [`docs/prototype.html`](./docs/prototype.html) — static reviewer-flow UX prototype.
+- [`CODEX.md`](./CODEX.md) — coding-agent project handoff and next milestones.
 - [`ARTEFACT.md`](./ARTEFACT.md) — implementation history, evaluation results, limitations, and deployment status.
 
 ## Contributions
