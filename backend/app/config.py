@@ -80,6 +80,7 @@ class Settings:
     # Parser/OCR used to produce evidence text. "ocr" provider requires an engine.
     parser_engine: str = "none"
     tesseract_cmd: str = "tesseract"
+    tesseract_psm: int = 3
     ocr_language: str = "eng"
     ocr_timeout_seconds: float = 120.0
     # Resource limits (one worker, one page at a time).
@@ -114,6 +115,7 @@ class Settings:
             device=env.get("EXTRACTION_DEVICE", "cpu"),
             parser_engine=parser,
             tesseract_cmd=env.get("TESSERACT_CMD", "tesseract"),
+            tesseract_psm=_int(env, "TESSERACT_PSM", 3),
             ocr_language=env.get("OCR_LANGUAGE", "eng"),
             ocr_timeout_seconds=_float(env, "OCR_TIMEOUT_SECONDS", 120.0),
             max_pages=_int(env, "MAX_PAGES", 5),
@@ -141,6 +143,8 @@ class Settings:
             raise ValueError(f"PARSER_ENGINE must be one of {OCR_ENGINES}, not {self.parser_engine!r}")
         if self.provider == "ocr" and self.parser_engine == "none":
             raise ValueError("EXTRACTION_PROVIDER=ocr needs PARSER_ENGINE=tesseract or rapidocr")
+        if self.tesseract_psm not in {3, 4, 6, 11, 12}:
+            raise ValueError("TESSERACT_PSM must be one of 3, 4, 6, 11, or 12")
         if self.max_pages < 1 or self.max_page_pixels < 100_000:
             raise ValueError("MAX_PAGES must be >= 1 and MAX_PAGE_PIXELS >= 100000")
 

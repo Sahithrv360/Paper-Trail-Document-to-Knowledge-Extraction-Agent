@@ -16,7 +16,7 @@ import re
 
 from .local_ocr import group_rows
 
-RULES_VERSION = "ocr-layout-rules-1"
+RULES_VERSION = "ocr-layout-rules-2"
 
 _NUMBER = re.compile(r"^[\(\-]?\d[\d.,' ]*\d?%?\)?$|^\d%?$")
 _CURRENCY = re.compile(r"^(\$|€|£|¥|₹|USD|EUR|GBP|INR|JPY|CHF|PLN|AUD|CAD)$", re.I)
@@ -61,6 +61,50 @@ def _union(boxes):
         return None
     return [round(min(b[0] for b in boxes), 1), round(min(b[1] for b in boxes), 1),
             round(max(b[2] for b in boxes), 1), round(max(b[3] for b in boxes), 1)]
+
+
+_GROUPED_NUMBER = re.compile(r"^\d{1,3}(?:[ \u00a0\u202f']\d{3})+(?:[.,]\d{1,4})?%?$")
+
+
+def _coalesce_grouped_number(tokens):
+    """Join OCR words only when they form an unambiguous grouped number.
+
+    Tesseract can emit an amount such as ``33 319,74`` as two adjacent tokens.
+    Arbitrary multiple values remain ambiguous; only a valid three-digit grouping
+    pattern is combined.
+    """
+    if len(tokens) < 2:
+        return tokens
+    ordered = sorted(tokens, key=lambda token: token["bbox"][0])
+    text = " ".join(token["text"] for token in ordered)
+    if not _GROUPED_NUMBER.fullmatch(text):
+        return tokens
+    bbox = _union([token["bbox"] for token in ordered])
+    return [{"text": text, "bbox": bbox, "cx": (bbox[0] + bbox[2]) / 2.0}]
+
+
+def _coalesce_adjacent_grouped_numbers(tokens):
+    """Rejoin nearby word tokens before summary-column matching.
+
+    A thousands-group prefix can fall just outside its summary column even though
+    it is visibly adjacent to the rest of that amount. Restrict merging by both
+    numeric shape and OCR-box distance so separate summary values stay separate.
+    """
+    groups = []
+    for token in sorted(tokens, key=lambda value: value["bbox"][0]):
+        if groups:
+            prior = groups[-1][-1]
+            gap = token["bbox"][0] - prior["bbox"][2]
+            height = max(prior["bbox"][3] - prior["bbox"][1],
+                         token["bbox"][3] - token["bbox"][1], 1.0)
+            candidate = groups[-1] + [token]
+            candidate_text = " ".join(part["text"] for part in candidate)
+            if -1.0 <= gap <= 1.5 * height and _GROUPED_NUMBER.fullmatch(candidate_text):
+                groups[-1].append(token)
+                continue
+        groups.append([token])
+    return [_coalesce_grouped_number(group)[0] if len(group) > 1 else group[0]
+            for group in groups]
 
 
 def _tokens(fragment):
@@ -331,6 +375,9 @@ class _Reader:
                     if kind in NUMERIC_COLUMNS and not _NUMBER.match(token["text"]):
                         continue  # unit words ("each") or currency marks beside amounts
                     assigned.setdefault(kind, []).append(token)
+            for kind in NUMERIC_COLUMNS:
+                if len(assigned.get(kind, [])) > 1:
+                    assigned[kind] = _coalesce_grouped_number(assigned[kind])
             numeric_columns = sum(1 for k in assigned if k in NUMERIC_COLUMNS)
             starts_row = (bool(assigned.get("index")) or numeric_columns >= 2 if has_index
                           else numeric_columns >= 1)
@@ -391,9 +438,11 @@ class _Reader:
                     continue
                 amounts = [t for f in fragments for t in _tokens(f)
                            if _NUMBER.match(t["text"]) and not t["text"].endswith("%")]
+                amounts = _coalesce_adjacent_grouped_numbers(amounts)
                 currencies = {t["text"] for f in fragments for t in _tokens(f) if _CURRENCY.match(t["text"])}
                 header = self._summary_header(rows[:index])
                 if header and len(amounts) > 1:
+                    grouped = {}
                     for token in amounts:
                         column = min(header, key=lambda c: abs(c["cx"] - token["cx"]))
                         width = max(column["width"], token["bbox"][2] - token["bbox"][0])
@@ -403,9 +452,17 @@ class _Reader:
                             continue
                         target = {"net_amount": "subtotal", "vat_amount": "tax_amount",
                                   "gross_amount": "total_amount"}.get(column["kind"])
-                        if target and target not in self.output:
-                            self.put(target, token["text"], page["page"], [_row_text(row)],
-                                     [token["bbox"]])
+                        if target:
+                            grouped.setdefault(target, []).append(token)
+                    for target, tokens in grouped.items():
+                        merged = _coalesce_grouped_number(tokens)
+                        if len(merged) != 1:
+                            self.reasons.append(f"Total-line {target.replace('_', ' ')} has "
+                                                "multiple values in one summary column; none "
+                                                "was assigned.")
+                        elif target not in self.output:
+                            self.put(target, merged[0]["text"], page["page"],
+                                     [_row_text(row)], [merged[0]["bbox"]])
                 elif len(amounts) == 1:
                     self.put("total_amount", amounts[0]["text"], page["page"], [_row_text(row)],
                              [amounts[0]["bbox"]])

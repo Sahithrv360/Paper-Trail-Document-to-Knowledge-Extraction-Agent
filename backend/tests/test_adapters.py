@@ -93,8 +93,12 @@ class SettingsTests(unittest.TestCase):
 
     def test_ocr_provider_defaults_to_tesseract_and_validates(self):
         self.assertEqual(Settings.from_env({"EXTRACTION_PROVIDER": "ocr"}).parser_engine, "tesseract")
+        self.assertEqual(Settings.from_env({"EXTRACTION_PROVIDER": "ocr"}).tesseract_psm, 3)
+        self.assertEqual(Settings.from_env({"TESSERACT_PSM": "6"}).tesseract_psm, 6)
         with self.assertRaises(ValueError):
             Settings.from_env({"EXTRACTION_PROVIDER": "ocr", "PARSER_ENGINE": "none"}).validate()
+        with self.assertRaises(ValueError):
+            Settings.from_env({"TESSERACT_PSM": "0"}).validate()
         with self.assertRaises(ValueError):
             Settings.from_env({"EXTRACTION_PROVIDER": "gpt"}).validate()
 
@@ -222,6 +226,16 @@ class OcrAdapterTests(unittest.TestCase):
             engine = TesseractEngine()
         self.assertEqual(engine.binary, expected)
 
+    def test_tesseract_uses_configured_page_segmentation_mode(self):
+        completed = type("Completed", (), {"returncode": 0, "stdout": self.TSV.encode(),
+                                            "stderr": b""})()
+        with patch("backend.app.extraction.local_ocr.shutil.which", return_value="tesseract.exe"), \
+                patch.object(TesseractEngine, "_version", return_value="tesseract test"), \
+                patch("backend.app.extraction.local_ocr.subprocess.run", return_value=completed) as run:
+            TesseractEngine(psm=3).recognize(b"image")
+        self.assertIn("--psm", run.call_args.args[0])
+        self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--psm") + 1], "3")
+
 
 class OcrLayoutMappingTests(unittest.TestCase):
     def test_layout_is_mapped_with_quotes_pages_and_boxes(self):
@@ -251,6 +265,33 @@ class OcrLayoutMappingTests(unittest.TestCase):
         self.assertEqual(record["field_evidence"]["vendor.address"]["match"]["source"]["status"],
                          "lines")
         self.assertEqual(result["validation_status"], "valid_reconciled")
+
+    def test_grouped_thousands_split_across_ocr_tokens_stay_in_one_item_cell(self):
+        fragments = [f for f in layout_fragments() if f["text"] != "19,98"]
+        fragments.extend([frag("5", 1420, 1390, 1440),
+                          frag("138,07", 1444, 1390, 1535)])
+        output = map_parse_to_invoice(layout_parse(fragments))
+
+        self.assertEqual(output["items"][0]["unit_price"], "5 138,07")
+        self.assertEqual(output["items"][0]["net_amount"], "59,94")
+
+    def test_grouped_thousands_split_in_summary_are_recombined(self):
+        fragments = [f for f in layout_fragments() if f["text"] != "$ 102,44"]
+        fragments.extend([frag("$", 1415, 2000, 1430), frag("33", 1450, 2000, 1475),
+                          frag("319,74", 1480, 2000, 1585)])
+        output = map_parse_to_invoice(layout_parse(fragments))
+
+        self.assertEqual(output["subtotal"], "33 319,74")
+        self.assertEqual(output["tax_amount"], "10,24")
+        self.assertEqual(output["total_amount"], "112,68")
+
+    def test_summary_group_prefix_outside_column_is_joined_when_adjacent(self):
+        fragments = [f for f in layout_fragments() if f["text"] != "$ 10,24"]
+        fragments.extend([frag("$", 1675, 2000, 1690), frag("3", 1698, 2000, 1705),
+                          frag("331,97", 1710, 2000, 1810)])
+        output = map_parse_to_invoice(layout_parse(fragments))
+
+        self.assertEqual(output["tax_amount"], "3 331,97")
 
     def test_ambiguous_columns_and_missing_table_are_reported_not_guessed(self):
         fragments = layout_fragments() + [frag("4,00", 1040, 1520, 1100)]  # second qty value

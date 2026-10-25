@@ -106,8 +106,8 @@ class TesseractEngine:
     name = "tesseract"
 
     def __init__(self, command: str = "tesseract", language: str = "eng",
-                 timeout_seconds: float = 120.0):
-        self.command, self.language, self.timeout = command, language, timeout_seconds
+                 timeout_seconds: float = 120.0, psm: int = 3):
+        self.command, self.language, self.timeout, self.psm = command, language, timeout_seconds, psm
         resolved = shutil.which(command) or (command if os.path.isfile(command) else None)
         if resolved is None and os.name == "nt" and command.lower() in ("tesseract", "tesseract.exe"):
             # The UB Mannheim installer may not refresh PATH in existing terminals (or
@@ -139,7 +139,7 @@ class TesseractEngine:
         env = dict(os.environ, OMP_THREAD_LIMIT="1")
         try:
             out = subprocess.run([self.binary, "stdin", "stdout", "-l", self.language,
-                                  "--psm", "3", "tsv"], input=png_bytes,
+                                  "--psm", str(self.psm), "tsv"], input=png_bytes,
                                  capture_output=True, timeout=self.timeout, env=env)
         except subprocess.TimeoutExpired as exc:
             raise OcrTimeout(f"Tesseract exceeded {self.timeout:g}s") from exc
@@ -252,7 +252,8 @@ def build_engine(name: str, settings=None):
     if name == "tesseract":
         return TesseractEngine(getattr(settings, "tesseract_cmd", "tesseract"),
                                getattr(settings, "ocr_language", "eng"),
-                               getattr(settings, "ocr_timeout_seconds", 120.0))
+                               getattr(settings, "ocr_timeout_seconds", 120.0),
+                               getattr(settings, "tesseract_psm", 3))
     if name == "rapidocr":
         return RapidOcrEngine(getattr(settings, "ocr_timeout_seconds", 120.0))
     raise OcrUnavailable(f"unknown OCR engine {name!r}")
