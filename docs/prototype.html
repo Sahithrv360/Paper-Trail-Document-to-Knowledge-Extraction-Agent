@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paper Trail — Review prototype</title>
+  <style>
+    :root { color-scheme: light; --ink:#172b3a; --muted:#627485; --line:#dce4e9; --paper:#fff; --wash:#f3f6f8; --teal:#0c766e; --amber:#8b5b13; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--wash); color:var(--ink); font:15px/1.5 "Segoe UI",Arial,sans-serif; }
+    header { background:#102b3b; color:white; padding:18px clamp(20px,5vw,64px); display:flex; justify-content:space-between; align-items:center; }
+    header strong { font-size:19px; letter-spacing:.2px; } header span { color:#bdd0da; font-size:13px; }
+    main { max-width:1180px; margin:34px auto; padding:0 22px; } .intro { margin-bottom:22px; } h1 { margin:0 0 4px; font-size:26px; } .sub { color:var(--muted); }
+    .layout { display:grid; grid-template-columns:260px 1fr; gap:18px; align-items:start; }
+    section, aside { background:var(--paper); border:1px solid var(--line); border-radius:10px; }
+    aside { padding:16px; } aside h2, section h2 { font-size:16px; margin:0 0 12px; }
+    .doc { padding:12px; border-radius:7px; margin:8px 0; border:1px solid var(--line); } .doc.active { border-color:var(--teal); background:#eef8f6; }
+    .doc b { display:block; font-size:14px; } .doc small { color:var(--muted); } .pill { display:inline-block; color:var(--amber); background:#fff5df; border-radius:12px; padding:2px 8px; font-size:11px; margin-top:7px; }
+    .content { display:grid; grid-template-columns:1fr 1fr; gap:18px; } .panel { padding:18px; } .panel.wide { grid-column:1/-1; }
+    .field { border-top:1px solid var(--line); padding:10px 0; display:grid; grid-template-columns:130px 1fr; gap:10px; } .field label { color:var(--muted); } .evidence { background:#eef8f6; border-left:3px solid var(--teal); padding:12px; border-radius:4px; }
+    .match { border:1px solid #e5c98d; background:#fffaf0; padding:13px; border-radius:7px; } .match strong { display:block; } .actions { display:flex; flex-wrap:wrap; gap:9px; margin-top:16px; }
+    button { border:1px solid var(--line); border-radius:6px; background:white; color:var(--ink); padding:9px 13px; font:inherit; cursor:pointer; } button.primary { background:var(--teal); border-color:var(--teal); color:white; }
+    #notice { color:var(--teal); font-size:13px; min-height:20px; margin-top:10px; }
+    @media(max-width:760px) { .layout,.content { grid-template-columns:1fr; } .panel.wide { grid-column:auto; } }
+  </style>
+</head>
+<body>
+  <header><strong>Paper Trail</strong><span>Document review · Prototype</span></header>
+  <main>
+    <div class="intro"><h1>Review extracted documents</h1><div class="sub">Check each fact against its source before recording a decision.</div></div>
+    <div class="layout">
+      <aside><h2>Needs review · 3</h2>
+        <div class="doc active"><b>invoice-242.jpg</b><small>Added today · Invoice</small><br><span class="pill">Vendor match unclear</span></div>
+        <div class="doc"><b>invoice-119.jpg</b><small>Yesterday · Invoice</small><br><span class="pill">Evidence missing</span></div>
+        <div class="doc"><b>contract-08.pdf</b><small>Yesterday · Contract</small><br><span class="pill">Queued</span></div>
+      </aside>
+      <div class="content">
+        <section class="panel"><h2>Extracted facts</h2>
+          <div class="field"><label>Invoice number</label><strong>INV-242</strong></div>
+          <div class="field"><label>Vendor mention</label><strong>Sri Venkateswara Traders Pvt Ltd</strong></div>
+          <div class="field"><label>Invoice date</label><strong>12 Aug 2026</strong></div>
+          <div class="field"><label>Total</label><strong>₹18,450.00</strong></div>
+        </section>
+        <section class="panel"><h2>Source evidence</h2>
+          <div class="evidence">“Sri Venkateswara Traders Pvt Ltd”<br><small>invoice-242.jpg · Page 1 · Vendor heading</small></div>
+          <p class="sub">Prototype content: evidence links will be populated by the extraction pipeline.</p>
+        </section>
+        <section class="panel wide"><h2>Vendor record candidates</h2>
+          <div class="match"><strong>No match selected</strong>Two similar records were found. The available document evidence does not uniquely identify either record. Keep the relationship unresolved until verified.</div>
+          <div class="actions"><button class="primary" onclick="show('Decision saved in this prototype: marked for review.')">Keep unresolved</button><button onclick="show('Correction flow is a design placeholder.')">Correct extracted facts</button><button onclick="show('Approval is unavailable until a reviewer verifies the source.')">Approve verified facts</button></div>
+          <div id="notice" aria-live="polite"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script>function show(message){document.getElementById('notice').textContent=message}</script>
+</body>
+</html>

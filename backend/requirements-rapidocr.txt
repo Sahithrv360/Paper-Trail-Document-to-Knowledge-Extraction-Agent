@@ -1,0 +1,5 @@
+# Optional second local OCR engine (PARSER_ENGINE=rapidocr). Bundles PP-OCR ONNX weights
+# (Apache-2.0) and runs on CPU via onnxruntime. Heavier than Tesseract: on a full A4 scan
+# it peaked around 1.6 GB RSS in testing; lower MAX_PAGE_PIXELS on small laptops.
+-r requirements-ocr.txt
+rapidocr_onnxruntime>=1.2,<2

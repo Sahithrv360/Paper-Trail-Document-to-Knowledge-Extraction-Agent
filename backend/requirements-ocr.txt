@@ -1,0 +1,6 @@
+# Local OCR extraction (EXTRACTION_PROVIDER=ocr, PARSER_ENGINE=tesseract).
+# Tesseract itself is a system program, not a pip package:
+#   Windows: install from https://github.com/UB-Mannheim/tesseract/wiki and set
+#            TESSERACT_CMD="C:\Program Files\Tesseract-OCR\tesseract.exe" if it is not on PATH
+#   macOS:   brew install tesseract        Linux: apt install tesseract-ocr
+Pillow>=11,<14

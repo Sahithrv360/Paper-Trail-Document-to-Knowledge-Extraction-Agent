@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Trail review</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <h1 class="brand">Paper Trail</h1>
+  <nav class="views" aria-label="Views">
+    <button type="button" data-view="review" aria-pressed="true">Review</button>
+    <button type="button" data-view="graph" aria-pressed="false">Graph</button>
+    <button type="button" data-view="changes" aria-pressed="false">Changes</button>
+  </nav>
+  <label class="reviewer">Reviewer <input id="reviewer" autocomplete="name" placeholder="Your name"></label>
+</header>
+<p id="notice" class="notice" role="status" hidden></p>
+
+<main id="view-review" class="review">
+  <aside class="docs" aria-label="Documents">
+    <div class="docs-head">
+      <h2>Documents</h2>
+      <button type="button" id="refresh" class="quiet">Refresh</button>
+    </div>
+    <ul id="doc-list"></ul>
+  </aside>
+  <section class="page" aria-label="Source page">
+    <div class="page-head">
+      <span id="page-title">Choose a document</span>
+      <span class="pager"><button type="button" id="prev-page" class="quiet" aria-label="Previous page">‹</button>
+      <span id="page-label"></span>
+      <button type="button" id="next-page" class="quiet" aria-label="Next page">›</button></span>
+    </div>
+    <div class="sheet-wrap"><div id="sheet" class="sheet"><img id="page-img" alt=""><div id="boxes" class="boxes"></div></div>
+    <p id="page-empty" class="empty">The source page appears here. Hover a field to see where it was read.</p></div>
+  </section>
+  <section class="fields" aria-label="Extracted fields">
+    <div id="summary" class="summary"></div>
+    <div id="findings"></div>
+    <div class="actions" id="actions" hidden>
+      <textarea id="note" rows="2" placeholder="Note for the review history (optional)"></textarea>
+      <div class="buttons">
+        <button type="button" id="approve" class="primary">Approve extraction</button>
+        <button type="button" id="edit">Correct values</button>
+        <button type="button" id="save" class="primary" hidden>Save correction</button>
+        <button type="button" id="cancel" class="quiet" hidden>Cancel</button>
+      </div>
+    </div>
+    <div id="field-table"></div>
+    <div id="history"></div>
+  </section>
+</main>
+
+<main id="view-graph" class="graph" hidden>
+  <div class="graph-head">
+    <label><input type="checkbox" id="reviewed-only"> Show reviewed support only</label>
+    <span id="graph-counts"></span>
+  </div>
+  <div class="graph-body">
+    <div class="graph-canvas"><svg id="graph-svg" role="img" aria-label="Knowledge graph"></svg></div>
+    <aside id="node-detail" class="node-detail"><p class="empty">Select a node to see its properties and supporting documents.</p></aside>
+  </div>
+  <div id="suggestions"></div>
+</main>
+
+<main id="view-changes" class="changes" hidden>
+  <table class="grid"><thead><tr><th>When</th><th>Action</th><th>Document</th><th>Version</th><th>Provider</th><th>Nodes +/~/−</th><th>Edges +/~/−</th><th>Run</th></tr></thead>
+  <tbody id="change-rows"></tbody></table>
+</main>
+</body>
+</html>

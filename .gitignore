@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# IDE and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local databases and generated outputs
+*.db
+*.sqlite
+*.sqlite3
+outputs/
+logs/
+reports/
+paper_trail.sqlite3
+paper_trail.sqlite3-shm
+paper_trail.sqlite3-wal
+watched/
+data/cache/
+data/raw/
+
+# Local AI handoff archives and prompts
+PaperTrail-*.zip
+CLAUDE_HANDOFF*.md
+CLAUDE_NEXT_TASK_PROMPT.md
+
+# Uploaded or confidential documents
+uploads/
+private_data/
+
+# Test and evaluation artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.cadra/
