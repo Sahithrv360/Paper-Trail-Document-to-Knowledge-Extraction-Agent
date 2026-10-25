@@ -58,10 +58,18 @@
   <div class="graph-head">
     <label><input type="checkbox" id="reviewed-only"> Show reviewed support only</label>
     <span id="graph-counts"></span>
+    <div class="graph-legend" aria-label="Graph legend">
+      <span><i class="legend-status reviewed" aria-hidden="true"></i> Reviewed support</span>
+      <span><i class="legend-status needs-review" aria-hidden="true"></i> Needs review</span>
+      <span>Document → Invoice: SUPPORTS</span>
+      <span>Vendor → Invoice: ISSUED</span>
+      <span>Invoice → Customer: BILLED_TO</span>
+      <span>Invoice → Line item: CONTAINS</span>
+    </div>
   </div>
   <div class="graph-body">
-    <div class="graph-canvas"><svg id="graph-svg" role="img" aria-label="Knowledge graph"></svg></div>
-    <aside id="node-detail" class="node-detail"><p class="empty">Select a node to see its properties and supporting documents.</p></aside>
+    <div class="graph-canvas"><svg id="graph-svg" role="group" aria-label="Interactive knowledge graph. Select a node to inspect its source and review status."></svg></div>
+    <aside id="node-detail" class="node-detail"><p class="empty">Select a node to see its properties, evidence, and supporting documents.</p></aside>
   </div>
   <div id="suggestions"></div>
 </main>

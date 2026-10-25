@@ -3,7 +3,8 @@
 
 const state = {
   token: "", docs: [], detail: null, page: 1, active: null, editing: false,
-  imageUrl: null, graph: null, selectedNode: null,
+  imageUrl: null, graph: null, selectedNode: null, graphRecord: null,
+  graphRecordFor: null, graphDetailError: null, graphDetailRequest: 0,
 };
 
 const HEADER_FIELDS = [
@@ -415,86 +416,200 @@ async function loadGraph() {
   try {
     const reviewed = $("reviewed-only").checked ? "1" : "0";
     state.graph = await (await api(`/api/graph?reviewed_only=${reviewed}`)).json();
-    renderGraph();
+    if (state.selectedNode && state.graph.nodes.some((node) => node.id === state.selectedNode)) {
+      selectNode(state.selectedNode); // refresh details against the current support filter
+    } else {
+      state.selectedNode = null;
+      state.graphRecord = null;
+      state.graphRecordFor = null;
+      renderGraph();
+    }
   } catch (error) {
     notify(`Could not load the graph: ${error.message}`, true);
   }
 }
 
 function nodeStatus(node) {
-  return node.support.length && node.support.every((s) => s.review_status === "approved" || s.review_status === "corrected") ? "reviewed" : "needs_review";
+  const support = node.support || [];
+  return support.length && support.every((s) => s.review_status === "approved" || s.review_status === "corrected")
+    ? "reviewed" : "needs_review";
+}
+
+const GRAPH_COLUMNS = [
+  { type: "Document", title: "Documents", x: 24 },
+  { type: "Vendor", title: "Vendors", x: 294 },
+  { type: "Invoice", title: "Invoices", x: 564 },
+  { type: "Customer", title: "Customers", x: 834 },
+  { type: "LineItem", title: "Line items", x: 1104 },
+];
+const GRAPH_NODE_TYPES = new Set(GRAPH_COLUMNS.map((column) => column.type));
+const GRAPH_EDGE_TYPES = new Set(["SUPPORTS", "ISSUED", "BILLED_TO", "CONTAINS"]);
+
+function graphNodeLabel(node, itemCounts, documentsByInvoice) {
+  const props = node.props || {};
+  if (node.type === "Document") {
+    return [props.filename || props.document_id || node.id, `Version ${show(props.version)} · ${show(props.doc_type || "document")}`];
+  }
+  if (node.type === "Invoice") {
+    const doc = documentsByInvoice[node.id];
+    const total = props.total_amount == null ? "Total unavailable" : `Total ${props.total_amount}`;
+    return [props.invoice_number || "(no invoice number)", `${total} · ${itemCounts[node.id] || 0} line(s)${doc ? ` · ${doc.props.filename || ""}` : ""}`];
+  }
+  if (node.type === "LineItem") {
+    const description = props.description || "(description unavailable)";
+    const gross = props.gross_amount == null ? "Gross unavailable" : `Gross ${props.gross_amount}`;
+    return [description, `Row ${(Number(props.row_index) || 0) + 1} · ${gross}`];
+  }
+  return [props.name || `(${node.type.toLowerCase()} name unavailable)`,
+    props.tax_id ? `Tax ID ${props.tax_id}` : "No tax ID"];
 }
 
 function renderGraph() {
   const graph = state.graph;
+  if (!graph) return;
   const nodes = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
-  const columns = { Vendor: [], Invoice: [], Customer: [] };
-  graph.nodes.forEach((n) => columns[n.type] && columns[n.type].push(n));
-  const itemCount = {};
-  graph.edges.filter((e) => e.type === "CONTAINS").forEach((e) => { itemCount[e.source] = (itemCount[e.source] || 0) + 1; });
-  const docOf = {};
-  graph.edges.filter((e) => e.type === "SUPPORTS").forEach((e) => { docOf[e.target] = nodes[e.source]; });
-  const label = (n) => n.type === "Invoice"
-    ? [`${n.props.invoice_number || "(no number)"}`, `${(docOf[n.id] && docOf[n.id].props.filename) || ""}, ${itemCount[n.id] || 0} lines`]
-    : [n.props.name || n.id, n.props.tax_id ? `Tax ID ${n.props.tax_id}` : "No tax ID"];
-  const W = 250, H = 46, GAP = 14, X = { Vendor: 24, Invoice: 344, Customer: 664 };
-  const position = {};
-  Object.entries(columns).forEach(([type, list]) => {
-    list.sort((a, b) => label(a)[0].localeCompare(label(b)[0]));
-    list.forEach((n, i) => { position[n.id] = { x: X[type], y: 48 + i * (H + GAP) }; });
+  const columns = Object.fromEntries(GRAPH_COLUMNS.map(({ type }) => [type, []]));
+  graph.nodes.forEach((node) => { if (GRAPH_NODE_TYPES.has(node.type)) columns[node.type].push(node); });
+  const itemCounts = {}, documentsByInvoice = {};
+  graph.edges.filter((edge) => edge.type === "CONTAINS").forEach((edge) => {
+    itemCounts[edge.source] = (itemCounts[edge.source] || 0) + 1;
   });
-  const rows = Math.max(1, ...Object.values(columns).map((l) => l.length));
-  const root = $("graph-svg");
-  root.setAttribute("viewBox", `0 0 ${X.Customer + W + 24} ${48 + rows * (H + GAP) + 16}`);
-  root.setAttribute("width", X.Customer + W + 24);
-  root.setAttribute("height", 48 + rows * (H + GAP) + 16);
+  graph.edges.filter((edge) => edge.type === "SUPPORTS").forEach((edge) => {
+    if (nodes[edge.source] && nodes[edge.target]) documentsByInvoice[edge.target] = nodes[edge.source];
+  });
+  const label = (node) => graphNodeLabel(node, itemCounts, documentsByInvoice);
+  const W = 228, H = 58, GAP = 18, position = {};
+  GRAPH_COLUMNS.forEach(({ type, x }) => {
+    columns[type].sort((a, b) => label(a)[0].localeCompare(label(b)[0]));
+    columns[type].forEach((node, i) => { position[node.id] = { x, y: 52 + i * (H + GAP) }; });
+  });
+  const rows = Math.max(1, ...Object.values(columns).map((list) => list.length));
+  const root = $("graph-svg"), width = GRAPH_COLUMNS.at(-1).x + W + 24;
+  const height = 52 + rows * (H + GAP) + 16;
+  root.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  root.setAttribute("width", width);
+  root.setAttribute("height", height);
   const selected = state.selectedNode;
-  const edges = graph.edges.filter((e) => (e.type === "ISSUED" || e.type === "BILLED_TO") && position[e.source] && position[e.target]);
+  const edges = graph.edges.filter((edge) => GRAPH_EDGE_TYPES.has(edge.type)
+    && position[edge.source] && position[edge.target]);
   const children = [
-    svg("text", { x: X.Vendor, y: 28, class: "col-title", text: `Vendors (${columns.Vendor.length})` }),
-    svg("text", { x: X.Invoice, y: 28, class: "col-title", text: `Invoices (${columns.Invoice.length})` }),
-    svg("text", { x: X.Customer, y: 28, class: "col-title", text: `Customers (${columns.Customer.length})` }),
-    ...edges.map((e) => {
-      const a = position[e.source], b = position[e.target];
-      const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2, mid = (x1 + x2) / 2;
-      const on = selected && (e.source === selected || e.target === selected);
-      return svg("path", { class: `edge${on ? " on" : ""}`, d: `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}` },
-        svg("title", { text: e.type === "ISSUED" ? "issued" : "billed to" }));
+    svg("defs", {}, svg("marker", { id: "graph-arrow", viewBox: "0 0 10 10", refX: 9, refY: 5,
+      markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" },
+    svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: "arrow-head" }))),
+    ...GRAPH_COLUMNS.map(({ type, title, x }) => svg("text", {
+      x, y: 30, class: "col-title", text: `${title} (${columns[type].length})`,
+    })),
+    ...edges.map((edge) => {
+      const a = position[edge.source], b = position[edge.target];
+      const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2;
+      const mid = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+      const on = selected && (edge.source === selected || edge.target === selected);
+      return svg("g", { class: `edge-group${on ? " on" : ""}` },
+        svg("path", { class: "edge", d: `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`,
+          "marker-end": "url(#graph-arrow)" }),
+        svg("text", { class: "edge-label", x: mid, y: midY - 5, "text-anchor": "middle", text: edge.type }));
     }),
-    ...Object.entries(position).map(([id, p]) => {
-      const n = nodes[id]; const [line1, line2] = label(n);
+    ...Object.entries(position).map(([id, point]) => {
+      const node = nodes[id], [line1, line2] = label(node);
       return svg("g", {
-        class: `node ${nodeStatus(n)}${selected === id ? " on" : ""}`, transform: `translate(${p.x},${p.y})`,
-        tabindex: "0", role: "button", "aria-label": `${n.type} ${line1}`,
-        onclick: () => selectNode(id), onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(id); } },
-      }, svg("rect", { width: W, height: H }),
-      svg("text", { x: 10, y: 19, text: truncate(line1, 34) }),
-      svg("text", { x: 10, y: 36, class: "col-title", text: truncate(line2, 38) }));
+        class: `node node-${node.type.toLowerCase()} ${nodeStatus(node)}${selected === id ? " on" : ""}`,
+        transform: `translate(${point.x},${point.y})`, tabindex: "0", role: "button",
+        "aria-label": `${node.type} ${line1}, ${nodeStatus(node) === "reviewed" ? "reviewed" : "needs review"}`,
+        "aria-pressed": String(selected === id),
+        onclick: () => selectNode(id),
+        onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(id); } },
+      }, svg("title", { text: `${node.type}: ${line1}` }), svg("rect", { width: W, height: H }),
+      svg("text", { x: 10, y: 22, text: truncate(line1, 30) }),
+      svg("text", { x: 10, y: 43, class: "node-subtitle", text: truncate(line2, 30) }));
     }),
   ];
   fill(root, ...children);
   $("graph-counts").textContent = `${graph.nodes.length} nodes, ${graph.edges.length} edges` +
-    (graph.nodes.length ? ". Dashed outline: some support still needs review." : ". Nothing to show yet.");
+    (graph.nodes.length ? " · Dashed outline: needs review; solid green: reviewed." : " · Nothing to show yet.");
   renderSuggestions(graph);
-  if (selected && nodes[selected]) renderNodeDetail(nodes[selected], docOf);
+  if (selected && nodes[selected]) renderNodeDetail(nodes[selected]);
+  else fill($("node-detail"), el("p", { class: "empty", text: "Select a node to see its properties, evidence, and supporting documents." }));
 }
 
 const truncate = (text, n) => (String(text).length > n ? `${String(text).slice(0, n - 1)}…` : String(text));
 
-function selectNode(id) { state.selectedNode = id; renderGraph(); }
+function selectNode(id) {
+  state.selectedNode = id;
+  state.graphRecord = null;
+  state.graphRecordFor = null;
+  state.graphDetailError = null;
+  const request = ++state.graphDetailRequest;
+  renderGraph();
+  const node = state.graph && state.graph.nodes.find((candidate) => candidate.id === id);
+  const documentId = node && node.support && node.support[0] && node.support[0].document_id;
+  if (!documentId) return;
+  api(`/api/documents/${encodeURIComponent(documentId)}`).then((response) => response.json())
+    .then((detail) => {
+      if (request !== state.graphDetailRequest || state.selectedNode !== id) return;
+      state.graphRecord = detail.extraction && detail.extraction.effective_record;
+      state.graphRecordFor = documentId;
+      renderNodeDetail(node);
+    })
+    .catch((error) => {
+      if (request !== state.graphDetailRequest || state.selectedNode !== id) return;
+      state.graphDetailError = error.message;
+      renderNodeDetail(node);
+    });
+}
 
-function renderNodeDetail(node, docOf) {
-  const props = Object.entries(node.props).filter(([k, v]) => k !== "variants" && k !== "match_key" && v !== null && typeof v !== "object");
-  const panel = $("node-detail");
-  const documentId = node.type === "Invoice" && docOf[node.id] ? docOf[node.id].props.document_id : null;
+function graphEvidencePaths(node) {
+  const evidence = (state.graphRecord || {}).field_evidence || {};
+  if (node.type === "Invoice") {
+    return new Set(["invoice_number", "invoice_date", "subtotal", "tax_amount", "total_amount",
+      "currency", "bank_account_iban"]);
+  }
+  if (node.type === "Vendor") return new Set(Object.keys(evidence).filter((path) => path.startsWith("vendor.")));
+  if (node.type === "Customer") return new Set(Object.keys(evidence).filter((path) => path.startsWith("customer.")));
+  if (node.type === "LineItem") {
+    const index = Number((node.props || {}).row_index ?? (node.props || {}).position);
+    return Number.isInteger(index) && index >= 0
+      ? new Set(Object.keys(evidence).filter((path) => path.startsWith(`items[${index}].`) || path.startsWith(`items.${index}.`)))
+      : new Set();
+  }
+  return new Set();
+}
+
+function renderNodeDetail(node) {
+  const props = Object.entries(node.props || {}).filter(([key, value]) => key !== "variants"
+    && key !== "match_key" && value !== null && typeof value !== "object");
+  const panel = $("node-detail"), evidence = (state.graphRecord || {}).field_evidence || {};
+  const paths = graphEvidencePaths(node), provenance = (state.graphRecord || {}).provenance || {};
+  const sources = node.support || [];
+  const evidenceRows = [...paths].filter((path) => evidence[path]).map((path) => {
+    const entry = evidence[path];
+    return el("li", {}, el("strong", { text: path }),
+      ` · ${entry.method || "source"}${entry.page ? ` · page ${entry.page}` : ""}`,
+      entry.quote || entry.raw_text ? el("blockquote", { text: entry.quote || entry.raw_text }) : null,
+      entry.match && entry.match.source ? el("span", { class: "match", text: `Source match: ${entry.match.source.status}` }) : null);
+  });
+  const provenanceRows = ["provider", "model_revision", "prompt_version", "extraction_method"]
+    .filter((key) => provenance[key]).map((key) => [key.replace(/_/g, " "), String(provenance[key])]);
   fill(panel,
-    el("h2", { text: `${node.type}` }),
-    el("dl", { class: "props" }, ...props.flatMap(([k, v]) => [el("dt", { text: k.replace(/_/g, " ") }), el("dd", { text: String(v) })])),
-    node.props.variants ? el("p", { text: `Spelled ${node.props.variants.length} ways across documents; exact match keys agree.` }) : null,
-    el("h2", { text: `Supported by ${node.support.length} document(s)` }),
-    el("ul", { class: "support" }, ...node.support.map((s) => el("li", {},
-      `${documentName(s.document_id)} v${show(s.version)} `, statusPill(s.review_status)))),
-    documentId ? el("button", { type: "button", text: "Open in review", onclick: () => { switchView("review"); selectDocument(documentId); } }) : null,
+    el("h2", { text: `${node.type} · ${nodeStatus(node) === "reviewed" ? "Reviewed" : "Needs review"}` }),
+    el("dl", { class: "props" }, ...props.flatMap(([key, value]) => [
+      el("dt", { text: key.replace(/_/g, " ") }), el("dd", { text: String(value) }),
+    ])),
+    node.props && node.props.variants ? el("p", { text: `Spelled ${node.props.variants.length} ways across documents; exact match keys agree.` }) : null,
+    provenanceRows.length ? el("h3", { text: "Extraction provenance" },
+      el("dl", { class: "props" }, ...provenanceRows.flatMap(([key, value]) => [
+        el("dt", { text: key }), el("dd", { text: value }),
+      ]))) : null,
+    paths.size ? el("section", {}, el("h3", { text: `Source evidence${state.graphRecordFor ? ` · ${documentName(state.graphRecordFor)}` : ""}` }),
+      evidenceRows.length ? el("ul", { class: "graph-evidence" }, ...evidenceRows)
+        : el("p", { class: "empty", text: state.graphDetailError
+          ? `Could not load source evidence: ${state.graphDetailError}`
+          : state.graphRecord ? "No field evidence was recorded for this node." : "Loading source evidence…" })) : null,
+    el("h3", { text: `Supported by ${sources.length} document(s)` }),
+    sources.length ? el("ul", { class: "support" }, ...sources.map((source) => el("li", {},
+      el("span", {}, `${documentName(source.document_id)} v${show(source.version)} `, statusPill(source.review_status)),
+      el("button", { type: "button", class: "quiet", text: "Open in review", onclick: () => {
+        switchView("review"); selectDocument(source.document_id);
+      } })))) : el("p", { class: "empty", text: "No active document support is attached." }),
   );
 }
 
