@@ -16,13 +16,15 @@ from .extraction.validation import INVOICE_LIKE_TYPES
 
 ONTOLOGY_VERSION = "papertrail-ontology-1"
 NODE_TYPES = frozenset({"Document", "Invoice", "Vendor", "Customer", "LineItem",
-                        "ProductCategory"})
+                        "ItemDescription", "ProductCategory"})
 # Edge type -> (source node type, target node type). Direction is part of the type.
 EDGE_TYPES = {
     "SUPPORTS": ("Document", "Invoice"),
     "ISSUED": ("Vendor", "Invoice"),
     "BILLED_TO": ("Invoice", "Customer"),
     "CONTAINS": ("Invoice", "LineItem"),
+    # A shared exact-description hub connects matching line items across invoices.
+    "MATCHES_DESCRIPTION": ("LineItem", "ItemDescription"),
     # Derived only in the Neo4j projection from shared, exact graph facts.
     "SAME_VENDOR_AS": ("Invoice", "Invoice"),
     "SAME_CUSTOMER_AS": ("Invoice", "Invoice"),

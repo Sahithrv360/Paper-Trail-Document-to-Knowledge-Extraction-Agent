@@ -81,10 +81,14 @@ class ReviewServerTests(unittest.TestCase):
         status, _, data = self.request("GET", "/")
         self.assertEqual(status, 200)
         self.assertIn(b"Ask the graph", data)
-        self.assertIn(b"Sync SQLite graph to Neo4j", data)
-        self.assertIn(b"Same vendor", data)
-        self.assertIn(b"Exact item-description match", data)
-        self.assertIn(b"Show line items for selected invoice", data)
+        self.assertIn(b"Sync Neo4j", data)
+        self.assertIn(b"Shared fact hub", data)
+        self.assertIn(b"Invoice, vendor, customer, or item", data)
+        self.assertIn(b"Show connections", data)
+        self.assertIn(b"id=\"filter-items\"", data)
+        self.assertIn(b"id=\"zoom-in\"", data)
+        self.assertIn(b"Drag the background to pan", data)
+        self.assertIn(b"Find a document", data)
         self.assertEqual(self.request("GET", "/app.css", token=None)[0], 200)
 
     def test_graph_rag_and_neo4j_routes_require_configuration_and_auth(self):

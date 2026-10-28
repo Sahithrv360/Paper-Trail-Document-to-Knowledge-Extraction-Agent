@@ -7,7 +7,7 @@ from unittest import mock
 
 from backend.app.graph_rag import (GRAPH_RAG_REMOTE_PHRASE, GraphAnswerProvider,
                                    Neo4jRetriever, query_terms, summarize_graph_facts)
-from backend.app.neo4j_sync import (derive_invoice_relationships, export_neo4j_graph, prepare_snapshot,
+from backend.app.neo4j_sync import (derive_shared_item_hubs, export_neo4j_graph, prepare_snapshot,
                                     sync_graph_export)
 
 
@@ -106,7 +106,7 @@ class FakeProjectionDriver:
 
 
 class Neo4jSyncTests(unittest.TestCase):
-    def test_shared_facts_create_explainable_invoice_links(self):
+    def test_shared_descriptions_connect_invoices_through_one_hub(self):
         export = graph_export()
         support = [{"document_id": "d2", "review_status": "approved"}]
         export["nodes"].extend([
@@ -126,14 +126,18 @@ class Neo4jSyncTests(unittest.TestCase):
              "source": "Invoice:d2", "target": "LineItem:d2:0", "props": {"row_index": 0},
              "support": support},
         ])
-        derived = derive_invoice_relationships(export)
-        self.assertEqual({edge["type"] for edge in derived},
-                         {"SAME_VENDOR_AS", "SAME_ITEM_DESCRIPTION_AS"})
-        self.assertEqual({edge["props"]["basis"] for edge in derived},
-                         {"vendor", "item_description"})
-        _, _, edges = prepare_snapshot(export, generation="g1")
-        self.assertEqual(len(edges["SAME_VENDOR_AS"]), 1)
+        derived_nodes, derived_edges = derive_shared_item_hubs(export)
+        self.assertEqual(len(derived_nodes), 1)
+        self.assertEqual(derived_nodes[0]["props"]["invoice_count"], 2)
+        self.assertEqual(len(derived_edges), 2)
+        self.assertEqual({edge["type"] for edge in derived_edges}, {"MATCHES_DESCRIPTION"})
+        generation, nodes, edges = prepare_snapshot(export, generation="g1")
+        self.assertEqual(len(nodes["ItemDescription"]), 1)
+        self.assertEqual(len(edges["MATCHES_DESCRIPTION"]), 2)
         self.assertEqual(len(edges["SAME_ITEM_DESCRIPTION_AS"]), 1)
+        direct = edges["SAME_ITEM_DESCRIPTION_AS"][0]
+        self.assertEqual(direct["properties"]["basis"], "item_description")
+        self.assertEqual(direct["properties"]["shared_description"], "invoice mapping book")
 
     def test_snapshot_validates_directions_and_keeps_nested_data(self):
         generation, nodes, edges = prepare_snapshot(graph_export(), generation="g1")

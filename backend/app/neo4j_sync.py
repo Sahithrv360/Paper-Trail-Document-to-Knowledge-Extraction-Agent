@@ -17,28 +17,14 @@ from .graph import GraphStore
 from .graph_ontology import EDGE_TYPES, NODE_TYPES
 
 
-def derive_invoice_relationships(export):
-    """Derive explainable invoice links from shared entities in a graph snapshot.
+def derive_shared_item_hubs(export):
+    """Create shared description hubs for exact item descriptions seen on 2+ invoices.
 
-    These projection edges do not alter the SQLite claim ledger. Item relationships
-    use exact case/whitespace-folded descriptions and make no product-identity claim.
+    Each invoice retains its own LineItem node and printed description. The shared hub
+    asserts only that descriptions match after whitespace/case folding; it does not
+    claim the underlying products are identical. These are Neo4j projection facts.
     """
     nodes = {node["id"]: node for node in export["nodes"]}
-    groups = defaultdict(lambda: defaultdict(list))
-    for edge in export["edges"]:
-        if edge["type"] == "ISSUED":
-            groups["SAME_VENDOR_AS"][edge["source"]].append(edge["target"])
-        elif edge["type"] == "BILLED_TO":
-            groups["SAME_CUSTOMER_AS"][edge["target"]].append(edge["source"])
-
-    links = defaultdict(set)
-    for relation, entities in groups.items():
-        for entity_id, invoice_ids in entities.items():
-            unique = sorted(set(invoice_ids))
-            for index, left in enumerate(unique):
-                for right in unique[index + 1:]:
-                    links[(left, right, relation)].add(entity_id)
-
     item_groups = defaultdict(lambda: defaultdict(set))
     for edge in export["edges"]:
         if edge["type"] != "CONTAINS":
@@ -48,24 +34,77 @@ def derive_invoice_relationships(export):
         if isinstance(description, str) and description.strip():
             key = re.sub(r"\s+", " ", description).strip().casefold()
             item_groups[key][edge["source"]].add(edge["target"])
-    for description_key, invoices in item_groups.items():
-        invoice_ids = sorted(invoices)
-        for index, left in enumerate(invoice_ids):
-            for right in invoice_ids[index + 1:]:
-                description_id = hashlib.sha256(description_key.encode("utf-8")).hexdigest()[:16]
-                links[(left, right, "SAME_ITEM_DESCRIPTION_AS")].add(description_id)
+
+    shared_nodes, shared_edges = [], []
+    for description_key, invoices in sorted(item_groups.items()):
+        if len(invoices) < 2:
+            continue
+        hub_id = "ItemDescription:" + hashlib.sha256(
+            description_key.encode("utf-8")).hexdigest()[:16]
+        support = []
+        for invoice_id, line_items in sorted(invoices.items()):
+            support.extend(nodes[invoice_id].get("support", []))
+            for line_item_id in sorted(line_items):
+                shared_edges.append({
+                    "id": f"{line_item_id}-MATCHES_DESCRIPTION->{hub_id}",
+                    "type": "MATCHES_DESCRIPTION", "source": line_item_id,
+                    "target": hub_id,
+                    "props": {"basis": "exact_normalized_description"},
+                    "support": nodes[line_item_id].get("support", []),
+                })
+        shared_nodes.append({
+            "id": hub_id, "type": "ItemDescription",
+            "props": {"normalized_description": description_key,
+                       "invoice_count": len(invoices),
+                       "match_basis": "exact_normalized_description"},
+            "support": support,
+        })
+    return shared_nodes, shared_edges
+
+
+def derive_direct_invoice_relationships(export, hub_nodes, hub_edges):
+    """Add explicit invoice-to-invoice shortcuts while retaining shared hubs.
+
+    These deterministic projection relationships carry the hub that supports each
+    link. They make invoice relations easy to query in Neo4j; the UI can hide them
+    by default and display the less crowded hub structure instead.
+    """
+    nodes = {node["id"]: node for node in export["nodes"]}
+    nodes.update({node["id"]: node for node in hub_nodes})
+    line_item_invoice = {edge["target"]: edge["source"] for edge in export["edges"]
+                         if edge["type"] == "CONTAINS"}
+    groups = defaultdict(lambda: defaultdict(set))
+    for edge in export["edges"]:
+        if edge["type"] == "ISSUED":
+            groups["SAME_VENDOR_AS"][edge["source"]].add(edge["target"])
+        elif edge["type"] == "BILLED_TO":
+            groups["SAME_CUSTOMER_AS"][edge["target"]].add(edge["source"])
+    for edge in hub_edges:
+        invoice_id = line_item_invoice.get(edge["source"])
+        if invoice_id:
+            groups["SAME_ITEM_DESCRIPTION_AS"][edge["target"]].add(invoice_id)
 
     derived = []
-    for (left, right, relation), entity_ids in sorted(links.items()):
-        for entity_id in sorted(entity_ids):
-            derived.append({
-                "id": f"{left}-{relation}->{right}:{entity_id}", "type": relation,
-                "source": left, "target": right,
-                "props": {"basis": relation.removeprefix("SAME_").removesuffix("_AS").lower(),
-                          "shared_entity_id": entity_id},
-                "support": list(nodes[left].get("support", [])) +
-                           list(nodes[right].get("support", [])),
-            })
+    for relation, hubs in sorted(groups.items()):
+        for hub_id, invoice_ids in sorted(hubs.items()):
+            ordered = sorted(invoice_ids)
+            for index, left in enumerate(ordered):
+                for right in ordered[index + 1:]:
+                    hub = nodes.get(hub_id) or {}
+                    hub_props = hub.get("props") or {}
+                    basis = {"SAME_VENDOR_AS": "vendor", "SAME_CUSTOMER_AS": "customer",
+                             "SAME_ITEM_DESCRIPTION_AS": "item_description"}[relation]
+                    props = {"basis": basis, "shared_entity_id": hub_id}
+                    if relation == "SAME_ITEM_DESCRIPTION_AS":
+                        props["shared_description"] = hub_props.get("normalized_description")
+                    elif hub_props.get("name"):
+                        props["shared_name"] = hub_props["name"]
+                    derived.append({
+                        "id": f"{left}-{relation}->{right}:{hub_id}", "type": relation,
+                        "source": left, "target": right, "props": props,
+                        "support": list(nodes.get(left, {}).get("support", [])) +
+                                   list(nodes.get(right, {}).get("support", [])),
+                    })
     return derived
 
 
@@ -103,8 +142,10 @@ def prepare_snapshot(export, generation=None):
     if not isinstance(nodes, list) or not isinstance(edges, list):
         raise ValueError("graph export must contain node and edge arrays")
 
+    derived_nodes, derived_edges = derive_shared_item_hubs(export)
+    direct_invoice_edges = derive_direct_invoice_relationships(export, derived_nodes, derived_edges)
     ids, by_type = set(), defaultdict(list)
-    for node in nodes:
+    for node in [*nodes, *derived_nodes]:
         node_id, node_type = node.get("id"), node.get("type")
         if not isinstance(node_id, str) or not node_id or node_type not in NODE_TYPES:
             raise ValueError("graph export contains an invalid or unsupported node")
@@ -125,7 +166,7 @@ def prepare_snapshot(export, generation=None):
         by_type[node_type].append({"id": node_id, "properties": properties})
 
     edges_by_type = defaultdict(list)
-    for edge in [*edges, *derive_invoice_relationships(export)]:
+    for edge in [*edges, *derived_edges, *direct_invoice_edges]:
         edge_type = edge.get("type")
         source, target = edge.get("source"), edge.get("target")
         if edge_type not in EDGE_TYPES or source not in ids or target not in ids:
@@ -190,7 +231,9 @@ def sync_graph_export(export, driver, database=None, generation=None):
 
         session.execute_write(write_snapshot)
     return {"generation": generation, "nodes": sum(map(len, nodes_by_type.values())),
-            "edges": sum(map(len, edges_by_type.values())), "reviewed_only": None}
+            "edges": sum(map(len, edges_by_type.values())),
+            "relationships_by_type": {kind: len(rows) for kind, rows in sorted(edges_by_type.items())},
+            "reviewed_only": None}
 
 
 def _restore_properties(properties, *, edge=False):
@@ -252,6 +295,15 @@ def export_neo4j_graph(driver, database=None, reviewed_only=False):
     return {"nodes": node_rows, "edges": edge_rows}
 
 
+def count_projected_relationships(driver, database=None):
+    """Read relationship counts back from Neo4j for a post-sync verification."""
+    rows, _, _ = driver.execute_query(
+        "MATCH ()-[r]->() WHERE r._papertrail = true "
+        "RETURN type(r) AS type, count(r) AS count ORDER BY type",
+        database_=database)
+    return {row["type"]: row["count"] for row in rows}
+
+
 def create_driver(uri=None, username=None, password=None):
     uri = uri or os.environ.get("NEO4J_URI", "")
     username = username or os.environ.get("NEO4J_USERNAME", "neo4j")
@@ -279,6 +331,11 @@ def main(argv=None):
     try:
         driver.verify_connectivity()
         result = sync_graph_export(export, driver, database=args.database)
+        verified = count_projected_relationships(driver, args.database)
+        if verified != result["relationships_by_type"]:
+            raise RuntimeError("Neo4j relationship counts differ from the synchronized snapshot: "
+                               f"expected {result['relationships_by_type']}, got {verified}")
+        result["verified_relationships_by_type"] = verified
     finally:
         driver.close()
     result["reviewed_only"] = args.reviewed_only

@@ -9,8 +9,8 @@
 </head>
 <body>
 <header class="bar">
-  <h1 class="brand">Paper Trail</h1>
-  <nav class="views" aria-label="Views">
+  <a class="brand" href="/" aria-label="Paper Trail home"><span class="brand-mark">PT</span><span><strong>Paper Trail</strong><small>Invoice intelligence workspace</small></span></a>
+  <nav class="views" aria-label="Workspace views">
     <button type="button" data-view="review" aria-pressed="true">Review</button>
     <button type="button" data-view="graph" aria-pressed="false">Graph</button>
     <button type="button" data-view="changes" aria-pressed="false">Changes</button>
@@ -22,9 +22,10 @@
 <main id="view-review" class="review">
   <aside class="docs" aria-label="Documents">
     <div class="docs-head">
-      <h2>Documents</h2>
+      <div><p class="eyebrow">WORKSPACE</p><h2>Documents <span id="doc-count" class="count-badge"></span></h2></div>
       <button type="button" id="refresh" class="quiet">Refresh</button>
     </div>
+    <label class="search-wrap" for="doc-search"><span aria-hidden="true">⌕</span><input id="doc-search" type="search" placeholder="Find a document" autocomplete="off"></label>
     <ul id="doc-list"></ul>
   </aside>
   <section class="page" aria-label="Source page">
@@ -55,36 +56,59 @@
 </main>
 
 <main id="view-graph" class="graph" hidden>
-  <div class="graph-head">
-    <label><input type="checkbox" id="reviewed-only"> Show reviewed support only</label>
-    <label id="item-graph-control"><input type="checkbox" id="show-line-items" disabled> Show line items for selected invoice</label>
+  <div class="graph-overview">
+    <div class="graph-intro"><p class="eyebrow">RELATIONSHIP EXPLORER</p><h2>Invoice network</h2><p>Follow shared facts to see why invoices connect.</p></div>
+    <div id="graph-metrics" class="graph-metrics" aria-label="Graph summary"></div>
+  </div>
+  <div class="graph-toolbar">
+    <form id="graph-search-form" class="graph-search"><label class="sr-only" for="graph-search">Search invoices, parties, or items</label><span aria-hidden="true">⌕</span><input id="graph-search" type="search" placeholder="Invoice, vendor, customer, or item"><button type="submit" class="quiet">Find</button></form>
+    <fieldset class="graph-filters"><legend>Show connections</legend>
+      <label><input type="checkbox" id="filter-items" checked> Items</label>
+      <label><input type="checkbox" id="filter-vendors" checked> Vendors</label>
+      <label><input type="checkbox" id="filter-customers" checked> Customers</label>
+    </fieldset>
+    <div class="graph-actions">
+      <label class="graph-option"><input type="checkbox" id="show-direct-links"> Direct links</label>
+      <label class="graph-option"><input type="checkbox" id="reviewed-only"> Reviewed only</label>
+      <div class="zoom-tools" aria-label="Graph zoom controls">
+        <button type="button" id="zoom-out" class="quiet" aria-label="Zoom out">−</button>
+        <button type="button" id="fit-graph" class="quiet">Fit</button>
+        <button type="button" id="zoom-in" class="quiet" aria-label="Zoom in">+</button>
+      </div>
+      <button type="button" id="reload-graph" class="quiet">Refresh</button>
+      <button type="button" id="sync-neo4j" class="primary">Sync Neo4j</button>
+    </div>
+  </div>
+  <div class="graph-subhead">
     <span id="graph-counts"></span>
-    <div class="graph-tools">
-      <span id="graph-page-label"></span>
+    <span class="graph-pagination"><span id="graph-page-label"></span>
       <button type="button" id="graph-prev" class="quiet" aria-label="Previous graph page">Previous</button>
       <button type="button" id="graph-next" class="quiet" aria-label="Next graph page">Next</button>
-      <button type="button" id="sync-neo4j" class="primary">Sync SQLite graph to Neo4j</button>
-    </div>
+    </span>
   </div>
   <div class="graph-legend" aria-label="Graph legend">
     <span><i class="legend-node invoice"></i>Invoice</span>
-    <span><i class="legend-edge same_vendor_as"></i>Same vendor</span>
-    <span><i class="legend-edge same_customer_as"></i>Same customer</span>
-    <span><i class="legend-edge same_item_description_as"></i>Exact item-description match</span>
-    <span class="legend-review">Links are built from shared graph records; select an invoice for party and item details below.</span>
+    <span><i class="legend-node shared-hub"></i>Shared fact hub</span>
+    <span><i class="legend-edge shared_itemdescription"></i>Shared item description</span>
+    <span><i class="legend-edge direct-link"></i>Direct invoice relationship</span>
+    <span class="legend-review">Drag the background to pan · scroll to zoom · select a node to inspect its neighborhood.</span>
   </div>
   <div class="graph-body">
-    <section class="graph-explorer" aria-label="Neo4j graph">
+    <section class="graph-explorer" aria-label="Invoice relationship graph">
       <div class="graph-canvas"><svg id="graph-svg" role="img" aria-label="Neo4j knowledge graph"></svg></div>
       <aside id="node-detail" class="node-detail"><p class="empty">Select a node to see its properties and supporting documents.</p></aside>
     </section>
     <aside class="chat-panel" aria-label="Ask the invoice graph">
       <div class="chat-heading"><h2>Ask the graph</h2>
-        <p>Answers use facts retrieved from Neo4j and link back to source records.</p></div>
-      <label class="chat-option"><input type="checkbox" id="chat-reviewed-only"> Reviewed facts only</label>
-      <label class="chat-option"><input type="checkbox" id="chat-use-llm"> Generate answer with hosted LLM</label>
+        <p>Answers use Neo4j facts and link back to source invoices.</p></div>
+      <div class="chat-options"><label class="chat-option"><input type="checkbox" id="chat-reviewed-only"> Reviewed facts only</label>
+      <label class="chat-option"><input type="checkbox" id="chat-use-llm"> Hosted answer generation</label></div>
+      <div class="chat-suggestions" aria-label="Suggested questions">
+        <button type="button" data-question="Which invoices share an item description?">Shared items</button>
+        <button type="button" data-question="Why is invoice 62517865 connected?">Explain a link</button>
+      </div>
       <div id="chat-messages" class="chat-messages" role="log" aria-live="polite">
-        <p class="chat-message assistant">Ask about an invoice number, vendor, customer, or line item.</p>
+        <p class="chat-message assistant">Ask about an invoice, party, shared item, or why two invoices are connected.</p>
       </div>
       <form id="chat-form" class="chat-form">
         <label class="sr-only" for="chat-question">Question</label>

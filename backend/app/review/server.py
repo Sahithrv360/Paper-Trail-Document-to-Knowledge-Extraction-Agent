@@ -158,6 +158,14 @@ class ReviewService:
 
     def graph_export(self, reviewed_only: bool) -> dict:
         export = self.graph.export(reviewed_only=reviewed_only)
+        # Keep the graph view useful if Neo4j is offline or its projection is stale.
+        # These deterministic links are a read-only presentation projection; SQLite
+        # remains the source of truth and the Neo4j sync button can rebuild its copy.
+        from ..neo4j_sync import derive_direct_invoice_relationships, derive_shared_item_hubs
+        hub_nodes, hub_edges = derive_shared_item_hubs(export)
+        direct_edges = derive_direct_invoice_relationships(export, hub_nodes, hub_edges)
+        export = {**export, "nodes": [*export["nodes"], *hub_nodes],
+                  "edges": [*export["edges"], *hub_edges, *direct_edges]}
         return {**export, "suggestions": self.graph.entity_suggestions(),
                 "duplicates": self.graph.duplicate_content_groups()}
 

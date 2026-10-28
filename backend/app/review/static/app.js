@@ -4,7 +4,9 @@
 const state = {
   token: "", docs: [], detail: null, page: 1, active: null, editing: false,
   imageUrl: null, graph: null, selectedNode: null, graphPage: 0, graphPageSize: 8,
-  showLineItems: false, lineItemsForInvoice: null,
+  docSearch: "",
+  graphSource: "Neo4j",
+  graphZoom: 1, graphPanX: 0, graphPanY: 0, graphDrag: null,
 };
 
 const HEADER_FIELDS = [
@@ -99,7 +101,11 @@ async function loadDocuments() {
 
 function renderDocList() {
   const list = $("doc-list");
-  fill(list, ...state.docs.map((doc) => el("li", {},
+  const query = state.docSearch.trim().toLocaleLowerCase();
+  const visible = state.docs.filter((doc) => !query ||
+    `${doc.file || ""} ${doc.validation_status || ""} ${doc.review_status || ""}`.toLocaleLowerCase().includes(query));
+  $("doc-count").textContent = query ? `${visible.length}/${state.docs.length}` : state.docs.length;
+  fill(list, ...(visible.length ? visible.map((doc) => el("li", {},
     el("button", {
       type: "button", "aria-current": state.detail && state.detail.document_id === doc.document_id ? "true" : "false",
       onclick: () => selectDocument(doc.document_id),
@@ -107,7 +113,8 @@ function renderDocList() {
     el("span", { class: "doc-file", text: doc.file || doc.document_id }),
     el("span", { class: "doc-meta" },
       statusPill(doc.review_status || doc.file_status), " ",
-      doc.validation_status ? STATUS_TEXT[doc.validation_status] || doc.validation_status : (doc.last_error ? "Extraction failed" : "Not extracted yet"))))));
+      doc.validation_status ? STATUS_TEXT[doc.validation_status] || doc.validation_status : (doc.last_error ? "Extraction failed" : "Not extracted yet")))))
+    : [el("li", { class: "empty", text: query ? "No matching documents." : "No documents available." })]));
 }
 
 async function selectDocument(documentId) {
@@ -415,12 +422,39 @@ function renderHistory() {
 async function loadGraph() {
   try {
     const reviewed = $("reviewed-only").checked ? "1" : "0";
-    state.graph = await (await api(`/api/neo4j/graph?reviewed_only=${reviewed}`)).json();
+    let neoGraph = null;
+    let neoError = null;
+    try { neoGraph = await (await api(`/api/neo4j/graph?reviewed_only=${reviewed}`)).json(); }
+    catch (error) { neoError = error; }
+    if (!neoGraph || !graphHasInvoiceLinks(neoGraph)) {
+      const localGraph = await (await api(`/api/graph?reviewed_only=${reviewed}`)).json();
+      if (graphHasInvoiceLinks(localGraph) || !neoGraph) {
+        state.graph = localGraph;
+        state.graphSource = "SQLite fallback";
+        notify(neoError
+          ? `Neo4j is unavailable (${neoError.message}). Showing the local SQLite graph; use Sync Neo4j to rebuild the projection.`
+          : "Neo4j has no invoice-to-invoice links, but SQLite does. Showing SQLite links; use Sync Neo4j to rebuild Neo4j.", true);
+      } else {
+        state.graph = neoGraph;
+        state.graphSource = "Neo4j";
+      }
+    } else {
+      state.graph = neoGraph;
+      state.graphSource = "Neo4j";
+    }
+    const { nodes, invoiceHubs } = invoiceHubIndex(state.graph);
+    if (!nodes[state.selectedNode]) {
+      const invoices = state.graph.nodes.filter((node) => node.type === "Invoice").sort((a, b) => {
+        const degree = (invoiceHubs.get(b.id)?.size || 0) - (invoiceHubs.get(a.id)?.size || 0);
+        return degree || String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id));
+      });
+      state.selectedNode = invoices[0]?.id || null;
+    }
     renderGraph();
   } catch (error) {
     state.graph = null;
-    $("graph-counts").textContent = "Neo4j graph is unavailable.";
-    notify(`Could not load the Neo4j graph: ${error.message}. Configure Neo4j and use Sync.`, true);
+    $("graph-counts").textContent = "Neo4j and SQLite graphs are unavailable.";
+    notify(`Could not load the invoice graph: ${error.message}. Check the review server and graph database.`, true);
   }
 }
 
@@ -433,7 +467,10 @@ async function syncNeo4j() {
     });
     const result = await response.json();
     state.graphPage = 0;
-    notify(`Synced ${result.nodes} nodes and ${result.edges} relationships to Neo4j.`);
+    const counts = result.relationships_by_type || {};
+    const directLinks = ["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"]
+      .reduce((sum, type) => sum + (counts[type] || 0), 0);
+    notify(`Synced ${result.nodes} nodes and ${result.edges} relationships to Neo4j, including ${directLinks} direct invoice links.`);
     await loadGraph();
   } catch (error) {
     notify(`Could not sync the Neo4j graph: ${error.message}`, true);
@@ -444,108 +481,168 @@ function nodeStatus(node) {
   return node.support.length && node.support.every((s) => s.review_status === "approved" || s.review_status === "corrected") ? "reviewed" : "needs_review";
 }
 
+function invoiceHubIndex(graph) {
+  const nodes = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
+  const lineItemInvoice = new Map();
+  const invoiceHubs = new Map();
+  const hubInvoices = new Map();
+  const add = (invoiceId, hubId) => {
+    if (!nodes[invoiceId] || !nodes[hubId]) return;
+    if (!invoiceHubs.has(invoiceId)) invoiceHubs.set(invoiceId, new Set());
+    if (!hubInvoices.has(hubId)) hubInvoices.set(hubId, new Set());
+    invoiceHubs.get(invoiceId).add(hubId);
+    hubInvoices.get(hubId).add(invoiceId);
+  };
+  graph.edges.filter((e) => e.type === "CONTAINS").forEach((e) => lineItemInvoice.set(e.target, e.source));
+  graph.edges.forEach((e) => {
+    if (e.type === "ISSUED" && nodes[e.source]?.type === "Vendor") add(e.target, e.source);
+    if (e.type === "BILLED_TO" && nodes[e.target]?.type === "Customer") add(e.source, e.target);
+    if (e.type === "MATCHES_DESCRIPTION") add(lineItemInvoice.get(e.source), e.target);
+  });
+  // Only show shared hubs; one-off facts do not create cross-invoice links.
+  for (const [hubId, invoices] of hubInvoices) {
+    if (invoices.size < 2) {
+      hubInvoices.delete(hubId);
+      for (const invoiceId of invoices) invoiceHubs.get(invoiceId)?.delete(hubId);
+    }
+  }
+  return { nodes, invoiceHubs, hubInvoices };
+}
+
+function graphHasInvoiceLinks(graph) {
+  if ((graph.edges || []).some((edge) => ["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"].includes(edge.type))) return true;
+  return [...invoiceHubIndex(graph).hubInvoices.values()].some((invoiceIds) => invoiceIds.size > 1);
+}
+
 function renderGraph() {
   const graph = state.graph;
   if (!graph) return;
-  const nodes = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
+  const { nodes, invoiceHubs, hubInvoices } = invoiceHubIndex(graph);
   const invoiceNodes = graph.nodes.filter((n) => n.type === "Invoice").sort((a, b) =>
     String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id)));
   const pageCount = Math.max(1, Math.ceil(invoiceNodes.length / state.graphPageSize));
   state.graphPage = Math.min(state.graphPage, pageCount - 1);
-  const visibleInvoices = invoiceNodes.slice(state.graphPage * state.graphPageSize,
+  const pageInvoices = invoiceNodes.slice(state.graphPage * state.graphPageSize,
     (state.graphPage + 1) * state.graphPageSize);
-  const invoiceIds = new Set(visibleInvoices.map((n) => n.id));
   const selected = state.selectedNode;
   const selectedNode = nodes[selected];
-  const selectedInvoice = selectedNode && selectedNode.type === "Invoice" ? selectedNode.id : null;
-  const lineItemInvoice = state.lineItemsForInvoice || selectedInvoice;
-  if (state.showLineItems && (!lineItemInvoice || !invoiceIds.has(lineItemInvoice))) {
-    state.showLineItems = false;
-    state.lineItemsForInvoice = null;
+  const showingConnections = ["Invoice", "ItemDescription", "Vendor", "Customer"].includes(selectedNode?.type);
+  let selectedHubs = new Set();
+  if (selectedNode?.type === "Invoice") selectedHubs = invoiceHubs.get(selected) || new Set();
+  else if (["ItemDescription", "Vendor", "Customer"].includes(selectedNode?.type)) selectedHubs = new Set([selected]);
+  selectedHubs = new Set([...selectedHubs].filter((hubId) => {
+    const type = nodes[hubId]?.type;
+    return (type === "ItemDescription" && $("filter-items").checked) ||
+      (type === "Vendor" && $("filter-vendors").checked) ||
+      (type === "Customer" && $("filter-customers").checked);
+  }));
+
+  let visibleInvoiceIds = new Set(pageInvoices.map((n) => n.id));
+  if (showingConnections) {
+    visibleInvoiceIds = new Set([selectedNode.type === "Invoice" ? selected : null].filter(Boolean));
+    for (const hubId of selectedHubs) {
+      for (const invoiceId of hubInvoices.get(hubId) || []) visibleInvoiceIds.add(invoiceId);
+    }
   }
-  const invoiceLinks = new Set(["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"]);
-  const edges = graph.edges.filter((edge) => {
-    if (invoiceLinks.has(edge.type)) return invoiceIds.has(edge.source) && invoiceIds.has(edge.target);
-    return edge.type === "CONTAINS" && state.showLineItems &&
-      edge.source === lineItemInvoice && invoiceIds.has(edge.source);
-  });
-  const visibleIds = new Set(invoiceIds);
-  edges.forEach((e) => { visibleIds.add(e.source); visibleIds.add(e.target); });
-  const visibleNodes = graph.nodes.filter((n) => visibleIds.has(n.id));
-  const columns = { Invoice: [] };
-  if (state.showLineItems) columns.LineItem = [];
-  visibleNodes.forEach((n) => columns[n.type] && columns[n.type].push(n));
+  const allConnectedInvoiceCount = visibleInvoiceIds.size;
+  const MAX_INVOICES = showingConnections ? 28 : state.graphPageSize;
+  const invoiceCandidates = invoiceNodes.filter((n) => visibleInvoiceIds.has(n.id));
+  const selectedInvoiceFirst = selectedNode?.type === "Invoice"
+    ? invoiceCandidates.find((n) => n.id === selected) : null;
+  const visibleInvoices = selectedInvoiceFirst
+    ? [selectedInvoiceFirst, ...invoiceCandidates.filter((n) => n.id !== selected).slice(0, MAX_INVOICES - 1)]
+    : invoiceCandidates.slice(0, MAX_INVOICES);
+  const invoiceIds = new Set(visibleInvoices.map((n) => n.id));
+  const visibleHubIds = new Set();
+  if (selectedHubs.size) {
+    for (const hubId of selectedHubs) {
+      if ([...(hubInvoices.get(hubId) || [])].filter((id) => invoiceIds.has(id)).length > 1) {
+        visibleHubIds.add(hubId);
+      }
+    }
+  }
+  const visibleHubs = [...visibleHubIds].map((id) => nodes[id]).filter(Boolean);
+  const edges = [];
+  for (const hub of visibleHubs) {
+    for (const invoiceId of hubInvoices.get(hub.id) || []) {
+      if (invoiceIds.has(invoiceId)) edges.push({ source: invoiceId, target: hub.id,
+        type: `SHARED_${hub.type.toUpperCase()}` });
+    }
+  }
+  const directTypes = new Set(["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"]);
+  const directTypeAllowed = (type) => (type === "SAME_ITEM_DESCRIPTION_AS" && $("filter-items").checked) ||
+    (type === "SAME_VENDOR_AS" && $("filter-vendors").checked) ||
+    (type === "SAME_CUSTOMER_AS" && $("filter-customers").checked);
+  const directEdges = $("show-direct-links").checked
+    ? graph.edges.filter((e) => directTypes.has(e.type) && directTypeAllowed(e.type) && invoiceIds.has(e.source) && invoiceIds.has(e.target))
+    : [];
+  edges.push(...directEdges.slice(0, 160));
   const itemCount = {};
   graph.edges.filter((e) => e.type === "CONTAINS").forEach((e) => { itemCount[e.source] = (itemCount[e.source] || 0) + 1; });
   const docOf = {};
   graph.edges.filter((e) => e.type === "SUPPORTS").forEach((e) => { docOf[e.target] = nodes[e.source]; });
   const label = (n) => {
-    if (n.type === "Document") return [n.props.filename || n.id, `Document | v${n.props.version ?? "?"}`];
     if (n.type === "Invoice") return [n.props.invoice_number || "(no number)",
-      `${n.props.invoice_date || "date unknown"} | ${itemCount[n.id] || 0} item(s)`];
-    if (n.type === "LineItem") return [n.props.description || "(no description)",
-      `Row ${(n.props.row_index ?? 0) + 1} | gross ${n.props.gross_amount ?? "unknown"}`];
-    return [n.props.name || n.id, n.props.tax_id ? `Tax ID ${n.props.tax_id}` : "No tax ID"];
+      `${n.props.invoice_date || "date unknown"}  ·  ${itemCount[n.id] || 0} line items`];
+    if (n.type === "ItemDescription") return [n.props.normalized_description || "(description)",
+      `Shared item description  ·  ${hubInvoices.get(n.id)?.size || 0} invoices`];
+    return [n.props.name || n.id, `${n.type}  ·  ${hubInvoices.get(n.id)?.size || 0} invoices`];
   };
-  const W = 180, H = 46, GAP = 13;
-  const X = { Invoice: 32, LineItem: 320 };
-  const columnTitles = { Invoice: "Invoices · linked by shared facts", LineItem: "Selected invoice items" };
-  const position = {};
-  Object.entries(columns).forEach(([type, list]) => {
-    list.sort((a, b) => label(a)[0].localeCompare(label(b)[0]));
-    list.forEach((n, i) => { position[n.id] = { x: X[type], y: 48 + i * (H + GAP) }; });
-  });
-  const rows = Math.max(1, ...Object.values(columns).map((l) => l.length));
+  const viewNodes = [...visibleInvoices, ...visibleHubs];
+  const viewWidth = 1400, viewHeight = 820;
+  const position = forceLayout(viewNodes, edges, nodes, selected, viewWidth, viewHeight);
   const root = $("graph-svg");
-  const graphWidth = (state.showLineItems ? X.LineItem : X.Invoice) + W + 64;
-  root.setAttribute("viewBox", `0 0 ${graphWidth} ${48 + rows * (H + GAP) + 16}`);
-  root.setAttribute("width", graphWidth);
-  root.setAttribute("height", 48 + rows * (H + GAP) + 16);
+  root.setAttribute("viewBox", `0 0 ${viewWidth} ${viewHeight}`);
+  root.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  root.setAttribute("width", "100%");
+  root.setAttribute("height", "100%");
   const visibleEdges = edges.filter((e) => position[e.source] && position[e.target]);
-  const relationTypes = ["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS", "CONTAINS"];
+  const relationTypes = ["SHARED_VENDOR", "SHARED_CUSTOMER", "SHARED_ITEMDESCRIPTION",
+    "SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"];
   const children = [
     svg("defs", {}, ...relationTypes.map((type) => svg("marker", {
       id: `arrow-${type}`, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6",
       markerHeight: "6", orient: "auto-start-reverse",
     }, svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: `arrow ${type.toLowerCase()}` })))),
-    ...Object.entries(columns).map(([type, list]) => svg("text", {
-      x: X[type], y: 28, class: "col-title", text: `${columnTitles[type]} (${list.length})`,
-    })),
     ...visibleEdges.map((e) => {
       const a = position[e.source], b = position[e.target];
-      const sameColumn = a.x === b.x;
-      const x1 = sameColumn ? a.x + W / 2 : a.x + W;
-      const x2 = sameColumn ? b.x + W / 2 : b.x;
-      const y1 = a.y + H / 2, y2 = b.y + H / 2, mid = (y1 + y2) / 2;
+      const dx = b.x - a.x, dy = b.y - a.y, distance = Math.max(1, Math.hypot(dx, dy));
+      const nx = -dy / distance, ny = dx / distance;
+      const bend = e.type.startsWith("SAME_") ? 22 : 0;
+      const cx = (a.x + b.x) / 2 + nx * bend, cy = (a.y + b.y) / 2 + ny * bend;
       const on = selected && (e.source === selected || e.target === selected);
       const relation = e.type.toLowerCase();
       return svg("path", { class: `edge ${relation}${on ? " on" : ""}`,
         "marker-end": `url(#arrow-${e.type})`,
-        d: sameColumn ? `M${x1},${y1} C${x1 + 120},${mid} ${x2 + 120},${mid} ${x2},${y2}`
-          : `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}` },
-      svg("title", { text: e.type.replace(/_/g, " ").toLowerCase() }));
+        d: `M${a.x},${a.y} Q${cx},${cy} ${b.x},${b.y}` },
+      svg("title", { text: `${e.type.replace(/_/g, " ").toLowerCase()}${e.props?.shared_description ? ` · ${e.props.shared_description}` : ""}` }));
     }),
-    ...Object.entries(position).map(([id, p]) => {
-      const n = nodes[id]; const [line1, line2] = label(n);
+    ...viewNodes.map((n) => {
+      const p = position[n.id]; const [line1, line2] = label(n);
+      const width = n.type === "Invoice" ? 224 : 205;
+      const height = n.type === "Invoice" ? 68 : 62;
       return svg("g", {
-        class: `node ${n.type.toLowerCase()} ${nodeStatus(n)}${selected === id ? " on" : ""}`,
-        transform: `translate(${p.x},${p.y})`,
+        class: `node ${n.type.toLowerCase()} ${nodeStatus(n)}${selected === n.id ? " selected" : ""}`,
+        transform: `translate(${p.x - width / 2},${p.y - height / 2})`,
         tabindex: "0", role: "button", "aria-label": `${n.type} ${line1}`,
-        onclick: () => selectNode(id), onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(id); } },
-      }, svg("rect", { width: W, height: H }),
-      svg("text", { x: 8, y: 19, text: truncate(line1, 24) }),
-      svg("text", { x: 8, y: 36, class: "col-title", text: truncate(line2, 24) }));
+        onclick: () => selectNode(n.id), onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(n.id); } },
+      }, svg("title", { text: `${line1} · ${line2}` }),
+      svg("rect", { width, height, rx: n.type === "ItemDescription" ? 15 : 10 }),
+      svg("text", { x: 12, y: 25, class: "node-title", text: truncate(line1, n.type === "Invoice" ? 24 : 28) }),
+      svg("text", { x: 12, y: 47, class: "node-subtitle", text: truncate(line2, 30) }));
     }),
   ];
-  fill(root, ...children);
-  const invoiceLinkCount = visibleEdges.filter((edge) => invoiceLinks.has(edge.type)).length;
-  $("graph-counts").textContent = invoiceLinkCount
-    ? `${visibleInvoices.length} invoices · ${invoiceLinkCount} shared-fact links shown`
-    : `${visibleInvoices.length} invoices · no shared-fact links on this page; select an invoice for its vendor, customer, and items`;
-  const itemToggle = $("show-line-items");
-  itemToggle.disabled = !selectedInvoice;
-  itemToggle.checked = state.showLineItems && Boolean(selectedInvoice);
-  $("item-graph-control").title = selectedInvoice ? "Expand this invoice's line items in the graph" : "Select an invoice node first";
+  fill(root, svg("g", { id: "graph-content", transform: graphTransform() }, ...children));
+  const directCount = directEdges.length;
+  $("graph-counts").textContent = showingConnections
+    ? `${state.graphSource} · ${visibleInvoices.length}${allConnectedInvoiceCount > visibleInvoices.length ? ` of ${allConnectedInvoiceCount}` : ""} invoices · ${visibleHubs.length} shared hubs${$("show-direct-links").checked ? ` · ${directCount} direct links${directEdges.length > 160 ? " (first 160 shown)" : ""}` : ""}`
+    : `${state.graphSource} · showing ${visibleInvoices.length} invoices from this page`;
+  const sharedHubCount = [...hubInvoices.values()].filter((ids) => ids.size > 1).length;
+  const directLinkCount = graph.edges.filter((e) => directTypes.has(e.type)).length;
+  const pendingCount = invoiceNodes.filter((n) => !["approved", "corrected"].includes(n.props.review_status)).length;
+  fill($("graph-metrics"), metricCard(invoiceNodes.length, "Invoices"),
+    metricCard(sharedHubCount, "Shared hubs"), metricCard(directLinkCount, "Invoice links"),
+    metricCard(pendingCount, "Need review"));
   $("graph-page-label").textContent = invoiceNodes.length
     ? `Invoices ${state.graphPage * state.graphPageSize + 1}–${Math.min((state.graphPage + 1) * state.graphPageSize, invoiceNodes.length)} of ${invoiceNodes.length} · `
       + `page ${state.graphPage + 1}/${pageCount}` : "No invoices";
@@ -555,23 +652,102 @@ function renderGraph() {
   if (selected && nodes[selected]) renderNodeDetail(nodes[selected], docOf);
 }
 
+function setGraphZoom(value) {
+  state.graphZoom = Math.max(.55, Math.min(2.6, value));
+  const content = $("graph-content");
+  if (content) content.setAttribute("transform", graphTransform());
+}
+
+function setupGraphInteractions() {
+  const canvas = $("graph-svg");
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    setGraphZoom(state.graphZoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.target !== canvas) return;
+    state.graphDrag = { x: event.clientX, y: event.clientY,
+      panX: state.graphPanX, panY: state.graphPanY };
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!state.graphDrag) return;
+    const box = canvas.getBoundingClientRect();
+    state.graphPanX = state.graphDrag.panX + (event.clientX - state.graphDrag.x) * 1400 / Math.max(1, box.width);
+    state.graphPanY = state.graphDrag.panY + (event.clientY - state.graphDrag.y) * 820 / Math.max(1, box.height);
+    const content = $("graph-content");
+    if (content) content.setAttribute("transform", graphTransform());
+  });
+  const stopDrag = () => { state.graphDrag = null; };
+  canvas.addEventListener("pointerup", stopDrag);
+  canvas.addEventListener("pointercancel", stopDrag);
+}
+
+function metricCard(value, label) {
+  return el("div", { class: "metric-card" }, el("strong", { text: Number(value).toLocaleString() }),
+    el("span", { text: label }));
+}
+
+function graphTransform() {
+  const x = 700, y = 410;
+  return `translate(${state.graphPanX} ${state.graphPanY}) translate(${x} ${y}) scale(${state.graphZoom}) translate(${-x} ${-y})`;
+}
+
+function forceLayout(nodes, edges, nodeMap, focusId, width, height) {
+  const center = { x: width / 2, y: height / 2 };
+  const entries = nodes.map((node, index) => {
+    const hash = [...node.id].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7);
+    const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2 + (hash % 1000) / 1000;
+    const radius = node.type === "Invoice" ? 250 + hash % 100 : 135 + hash % 60;
+    return { id: node.id, type: node.type, x: node.id === focusId ? center.x : center.x + Math.cos(angle) * radius,
+      y: node.id === focusId ? center.y : center.y + Math.sin(angle) * radius,
+      pinned: node.id === focusId };
+  });
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const springs = edges.map((edge) => ({ a: byId.get(edge.source), b: byId.get(edge.target),
+    ai: entries.findIndex((entry) => entry.id === edge.source), bi: entries.findIndex((entry) => entry.id === edge.target),
+    length: edge.type.startsWith("SAME_") ? 230 : 205 })).filter((edge) => edge.a && edge.b);
+  for (let step = 0; step < 72; step += 1) {
+    const fx = new Array(entries.length).fill(0), fy = new Array(entries.length).fill(0);
+    for (let i = 0; i < entries.length; i += 1) {
+      for (let j = i + 1; j < entries.length; j += 1) {
+        const dx = entries[j].x - entries[i].x, dy = entries[j].y - entries[i].y;
+        const d2 = Math.max(100, dx * dx + dy * dy), force = Math.min(10, 4200 / d2);
+        const inv = 1 / Math.sqrt(d2), x = dx * inv * force, y = dy * inv * force;
+        fx[i] -= x; fy[i] -= y; fx[j] += x; fy[j] += y;
+      }
+    }
+    for (const edge of springs) {
+      const dx = edge.b.x - edge.a.x, dy = edge.b.y - edge.a.y;
+      const distance = Math.max(1, Math.hypot(dx, dy)), force = (distance - edge.length) * .014;
+      const x = dx / distance * force, y = dy / distance * force;
+      const { ai, bi } = edge;
+      fx[ai] += x; fy[ai] += y; fx[bi] -= x; fy[bi] -= y;
+    }
+    const cooling = 1 - step / 90;
+    entries.forEach((entry, index) => {
+      if (entry.pinned) return;
+      fx[index] += (center.x - entry.x) * .002;
+      fy[index] += (center.y - entry.y) * .002;
+      entry.x = Math.max(115, Math.min(width - 115, entry.x + Math.max(-13, Math.min(13, fx[index])) * cooling));
+      entry.y = Math.max(50, Math.min(height - 50, entry.y + Math.max(-13, Math.min(13, fy[index])) * cooling));
+    });
+  }
+  return Object.fromEntries(entries.map((entry) => [entry.id, entry]));
+}
+
 const truncate = (text, n) => (String(text).length > n ? `${String(text).slice(0, n - 1)}…` : String(text));
 
 function focusGraphNode(id) {
-  state.selectedNode = id;
-  const selectedNode = state.graph.nodes.find((node) => node.id === id);
+  const { nodes } = invoiceHubIndex(state.graph);
+  const selectedNode = nodes[id];
+  let invoiceId = selectedNode?.type === "Invoice" ? id : null;
+  if (selectedNode?.type === "LineItem") {
+    invoiceId = state.graph.edges.find((edge) => edge.type === "CONTAINS" && edge.target === id)?.source || null;
+  }
+  state.selectedNode = invoiceId || id;
   const invoiceNodes = state.graph.nodes.filter((n) => n.type === "Invoice").sort((a, b) =>
     String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id)));
-  let invoiceId = selectedNode && selectedNode.type === "Invoice" ? id : null;
-  if (selectedNode && selectedNode.type === "LineItem") {
-    invoiceId = state.graph.edges.find((edge) => edge.type === "CONTAINS" && edge.target === id)?.source || null;
-    state.lineItemsForInvoice = invoiceId;
-    state.showLineItems = Boolean(invoiceId);
-  } else if (!invoiceId) {
-    state.showLineItems = false;
-    state.lineItemsForInvoice = null;
-  }
-  if (invoiceId && selectedNode && selectedNode.type === "Invoice") state.lineItemsForInvoice = invoiceId;
   const invoiceIndex = invoiceNodes.findIndex((n) => n.id === invoiceId);
   if (invoiceIndex >= 0) state.graphPage = Math.floor(invoiceIndex / state.graphPageSize);
   renderGraph();
@@ -582,8 +758,6 @@ function selectNode(id) { focusGraphNode(id); }
 function changeGraphPage(delta) {
   state.graphPage = Math.max(0, state.graphPage + delta);
   state.selectedNode = null;
-  state.lineItemsForInvoice = null;
-  state.showLineItems = false;
   renderGraph();
 }
 
@@ -608,9 +782,17 @@ function renderNodeDetail(node, docOf) {
     }
     return [];
   }) : [];
-  const invoiceConnections = node.type === "Invoice" ? state.graph.edges.filter((edge) =>
-    ["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"].includes(edge.type) &&
-    (edge.source === node.id || edge.target === node.id)) : [];
+  const { nodes: graphNodes, invoiceHubs, hubInvoices } = invoiceHubIndex(state.graph);
+  const sharedHubIds = node.type === "Invoice" ? [...(invoiceHubs.get(node.id) || [])]
+    : ["ItemDescription", "Vendor", "Customer"].includes(node.type) ? [node.id] : [];
+  const linked = new Map();
+  sharedHubIds.forEach((hubId) => {
+    for (const invoiceId of hubInvoices.get(hubId) || []) {
+      if (invoiceId === node.id) continue;
+      if (!linked.has(invoiceId)) linked.set(invoiceId, []);
+      linked.get(invoiceId).push(graphNodes[hubId]);
+    }
+  });
   fill(panel,
     el("h2", { text: `${node.type}` }),
     el("dl", { class: "props" }, ...props.flatMap(([k, v]) => [el("dt", { text: k.replace(/_/g, " ") }), el("dd", { text: String(v) })])),
@@ -620,17 +802,17 @@ function renderNodeDetail(node, docOf) {
         el("strong", { text: `${relation}: ${party.props.name || "Unknown"}` }),
         el("span", { text: [party.props.address, party.props.tax_id ? `Tax ID ${party.props.tax_id}` : null].filter(Boolean).join(" · ") || "Party details unavailable" }))))
     ) : null,
-    invoiceConnections.length ? el("section", { class: "invoice-relations" },
-      el("h2", { text: `Connected invoices (${invoiceConnections.length})` }),
-      el("ul", {}, ...invoiceConnections.map((edge) => {
-        const relatedId = edge.source === node.id ? edge.target : edge.source;
-        const related = state.graph.nodes.find((item) => item.id === relatedId);
+    linked.size ? el("section", { class: "invoice-relations" },
+      el("h2", { text: `Connected invoices (${linked.size})` }),
+      el("ul", {}, ...[...linked.entries()].map(([relatedId, hubs]) => {
+        const related = graphNodes[relatedId];
         const title = related ? `Invoice ${related.props.invoice_number || related.id}` : relatedId;
+        const via = hubs.map((hub) => hub.type === "ItemDescription"
+          ? `item “${hub.props.normalized_description}”` : `${hub.type.toLowerCase()} ${hub.props.name || ""}`).join("; ");
         return el("li", {}, el("button", { type: "button", class: "quiet", text: title,
-          onclick: () => focusGraphNode(relatedId) }),
-        el("span", { text: `Shared ${edge.props && edge.props.basis || "graph fact"}` }));
+          onclick: () => focusGraphNode(relatedId) }), el("span", { text: `Via shared ${via}` }));
       }))
-    ) : node.type === "Invoice" ? el("p", { class: "empty", text: "No supported link to another invoice yet. A link appears only when invoices share a vendor, customer, or exact item description." }) : null,
+    ) : node.type === "Invoice" ? el("p", { class: "empty", text: "No shared vendor, customer, or exact item-description hub connects this invoice yet." }) : null,
     node.props.variants ? el("p", { text: `Spelled ${node.props.variants.length} ways across documents; exact match keys agree.` }) : null,
     el("h2", { text: `Supported by ${node.support.length} document(s)` }),
     el("ul", { class: "support" }, ...node.support.map((s) => el("li", {},
@@ -640,8 +822,7 @@ function renderNodeDetail(node, docOf) {
       el("ul", { class: "invoice-items" }, ...invoiceItems.map((item) => el("li", {},
         el("strong", { text: `Row ${(item.props.row_index ?? 0) + 1}: ${item.props.description || "(no description)"}` }),
         el("span", { text: `Qty ${show(item.props.quantity)} | Net ${show(item.props.net_amount)} | Gross ${show(item.props.gross_amount)}` })))),
-      el("button", { type: "button", class: "quiet", text: "Expand these items in the graph",
-        onclick: () => { state.showLineItems = true; state.lineItemsForInvoice = node.id; renderGraph(); } })) : null,
+    ) : null,
     documentId ? el("button", { type: "button", text: "Open in review", onclick: () => { switchView("review"); selectDocument(documentId); } }) : null,
   );
 }
@@ -732,6 +913,10 @@ function init() {
   $("reviewer").value = storageGet("papertrail.reviewer");
   document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
   $("refresh").addEventListener("click", loadDocuments);
+  $("doc-search").addEventListener("input", (event) => {
+    state.docSearch = event.target.value;
+    renderDocList();
+  });
   $("approve").addEventListener("click", () => submitReview("approved"));
   $("edit").addEventListener("click", () => { state.editing = true; renderDetail(); });
   $("cancel").addEventListener("click", () => { state.editing = false; renderDetail(); });
@@ -739,18 +924,39 @@ function init() {
   $("prev-page").addEventListener("click", () => { state.page -= 1; loadPage(); });
   $("next-page").addEventListener("click", () => { state.page += 1; loadPage(); });
   $("reviewed-only").addEventListener("change", () => {
-    state.graphPage = 0; state.selectedNode = null; state.showLineItems = false;
-    state.lineItemsForInvoice = null; loadGraph();
+    state.graphPage = 0; state.selectedNode = null; loadGraph();
   });
-  $("show-line-items").addEventListener("change", (event) => {
-    state.showLineItems = event.target.checked;
-    state.lineItemsForInvoice = state.showLineItems ? state.selectedNode : null;
-    renderGraph();
+  $("show-direct-links").addEventListener("change", renderGraph);
+  ["filter-items", "filter-vendors", "filter-customers"].forEach((id) => $(id).addEventListener("change", renderGraph));
+  $("reload-graph").addEventListener("click", loadGraph);
+  $("zoom-in").addEventListener("click", () => setGraphZoom(state.graphZoom * 1.2));
+  $("zoom-out").addEventListener("click", () => setGraphZoom(state.graphZoom / 1.2));
+  $("fit-graph").addEventListener("click", () => {
+    state.graphZoom = 1; state.graphPanX = 0; state.graphPanY = 0; renderGraph();
+  });
+  setupGraphInteractions();
+  $("graph-search-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const query = $("graph-search").value.trim().toLocaleLowerCase();
+    const graphNodes = state.graph?.nodes || [];
+    const searchable = graphNodes.filter((node) => ["Invoice", "Vendor", "Customer", "ItemDescription"].includes(node.type));
+    const valueFor = (node) => node.type === "Invoice"
+      ? [node.props.invoice_number, node.props.invoice_date].join(" ")
+      : node.type === "ItemDescription" ? node.props.normalized_description : node.props.name;
+    const match = searchable.find((node) => node.type === "Invoice" &&
+      String(node.props.invoice_number || "").toLocaleLowerCase() === query) ||
+      searchable.find((node) => String(valueFor(node) || "").toLocaleLowerCase().includes(query));
+    if (match) focusGraphNode(match.id);
+    else notify(query ? "No invoice, party, or item matched: " + $("graph-search").value.trim() : "Enter an invoice number, party, or item to search.", true);
   });
   $("graph-prev").addEventListener("click", () => changeGraphPage(-1));
   $("graph-next").addEventListener("click", () => changeGraphPage(1));
   $("sync-neo4j").addEventListener("click", syncNeo4j);
   $("chat-form").addEventListener("submit", askGraph);
+  document.querySelectorAll("[data-question]").forEach((button) => button.addEventListener("click", () => {
+    $("chat-question").value = button.dataset.question;
+    $("chat-question").focus();
+  }));
   window.addEventListener("resize", drawBoxes);
   if (!state.token) { notify("Open the review link printed by the server; it carries the access token.", true); return; }
   loadDocuments();

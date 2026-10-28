@@ -185,7 +185,7 @@ python -m backend.app.neo4j_sync
 
 The sync is repeatable and imports only the application's known node and relationship types. Add `--reviewed-only` to project only approved/corrected facts. Open Neo4j Browser at `http://localhost:7474` and try `MATCH (n:PaperTrail) RETURN n LIMIT 100`.
 
-To inspect invoice-to-invoice links in Neo4j Browser, run `MATCH (a:PaperTrail:Invoice)-[r]->(b:PaperTrail:Invoice) RETURN a,r,b`. To rebuild after new extractions, reviews, or corrections, run `python -m backend.app.neo4j_sync` again. In the Paper Trail Graph view, use **Sync SQLite graph to Neo4j** after starting the review server; select an invoice to see its vendor, customer, line items, support, and shared-fact links below the overview.
+To inspect invoice-to-invoice links in Neo4j Browser, run `MATCH (a:PaperTrail:Invoice)-[r]->(b:PaperTrail:Invoice) RETURN a,r,b`. To rebuild after new extractions, reviews, or corrections, run `python -m backend.app.neo4j_sync` again. In the Paper Trail Graph view, use **Sync Neo4j** after starting the review server; search for an invoice, party, or item, then select a node to inspect its connected neighborhood and supporting facts.
 
 Start the combined graph and chat review UI with:
 
