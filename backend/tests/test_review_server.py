@@ -77,6 +77,28 @@ class ReviewServerTests(unittest.TestCase):
         self.assertEqual(headers["X-Frame-Options"], "DENY")
         self.assertEqual(self.request("GET", "/app.js", token=None)[0], 200)
 
+    def test_graph_page_includes_neo4j_sync_and_chat_controls(self):
+        status, _, data = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Ask the graph", data)
+        self.assertIn(b"Sync SQLite graph to Neo4j", data)
+        self.assertEqual(self.request("GET", "/app.css", token=None)[0], 200)
+
+    def test_graph_rag_and_neo4j_routes_require_configuration_and_auth(self):
+        self.assertEqual(self.request("GET", "/api/neo4j/graph", token=None)[0], 401)
+        status, payload = self.json("GET", "/api/neo4j/graph")
+        self.assertEqual(status, 503)
+        self.assertIn("Neo4j is not configured", payload["error"])
+        status, payload = self.json("POST", "/api/graph-rag", {"question": "   "})
+        self.assertEqual(status, 400)
+        status, payload = self.json("POST", "/api/graph-rag", {
+            "question": "Acme invoices", "generate": "false"})
+        self.assertEqual(status, 400)
+        status, payload = self.json("POST", "/api/neo4j/sync", {"reviewed_only": "false"})
+        self.assertEqual(status, 400)
+        status, payload = self.json("POST", "/api/graph-rag", {"question": "Acme invoices"})
+        self.assertEqual(status, 503)
+
     def test_api_requires_token_loopback_host_and_same_origin(self):
         self.assertEqual(self.request("GET", "/api/documents", token=None)[0], 401)
         self.assertEqual(self.request("GET", "/api/documents", token="wrong")[0], 401)

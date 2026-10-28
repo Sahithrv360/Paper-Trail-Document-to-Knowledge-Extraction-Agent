@@ -55,8 +55,11 @@ class ReviewError(Exception):
 class ReviewService:
     """The data operations behind the HTTP layer (also usable directly in tests)."""
 
-    def __init__(self, graph, registry=None, settings=None):
+    def __init__(self, graph, registry=None, settings=None, neo4j_driver=None,
+                 neo4j_database=None, answer_provider_factory=None):
         self.graph, self.registry, self.settings = graph, registry, settings
+        self.neo4j_driver, self.neo4j_database = neo4j_driver, neo4j_database
+        self.answer_provider_factory = answer_provider_factory
         self._page_cache = OrderedDict()
         self._cache_lock = threading.Lock()
 
@@ -157,6 +160,54 @@ class ReviewService:
         export = self.graph.export(reviewed_only=reviewed_only)
         return {**export, "suggestions": self.graph.entity_suggestions(),
                 "duplicates": self.graph.duplicate_content_groups()}
+
+    def neo4j_graph_export(self, reviewed_only: bool) -> dict:
+        if self.neo4j_driver is None:
+            raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE,
+                              "Neo4j is not configured; set NEO4J_URI and NEO4J_PASSWORD")
+        from ..neo4j_sync import export_neo4j_graph
+        return export_neo4j_graph(self.neo4j_driver, self.neo4j_database, reviewed_only)
+
+    def sync_neo4j(self, reviewed_only: bool) -> dict:
+        if self.neo4j_driver is None:
+            raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE,
+                              "Neo4j is not configured; set NEO4J_URI and NEO4J_PASSWORD")
+        from ..neo4j_sync import sync_graph_export
+        result = sync_graph_export(self.graph.export(reviewed_only=reviewed_only),
+                                   self.neo4j_driver, self.neo4j_database)
+        result["reviewed_only"] = reviewed_only
+        return result
+
+    def ask_graph(self, question: str, generate: bool = False,
+                  include_unreviewed: bool = False, limit: int = 8) -> dict:
+        if self.neo4j_driver is None:
+            raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE,
+                              "Neo4j is not configured; sync the graph after configuring Neo4j")
+        from ..graph_rag import GraphAnswerProvider, Neo4jRetriever
+        retrieved = Neo4jRetriever(self.neo4j_driver, self.neo4j_database).retrieve(
+            question, limit=limit, reviewed_only=not include_unreviewed)
+        if generate:
+            settings = self.settings
+            if settings is None:
+                from ..config import Settings
+                settings = Settings.from_env()
+            try:
+                factory = self.answer_provider_factory or GraphAnswerProvider
+                provider = factory(settings)
+                answer = provider.answer(question, retrieved)
+                retrieved["context_truncated"] = (retrieved.get("context_truncated", False)
+                                                   or getattr(provider, "context_truncated", False))
+            except RuntimeError as exc:
+                raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
+        elif not retrieved["matches"]:
+            answer = "No matching graph facts were found. Try an invoice number, party name, or item description."
+        else:
+            answer = (f"Found {len(retrieved['matches'])} matching graph record(s). "
+                      "Review the cited source records below. Enable hosted answers to get a summary.")
+        return {"answer": answer, "sources": retrieved["sources"],
+                "retrieval_count": len(retrieved["matches"]),
+                "context_truncated": bool(retrieved.get("context_truncated")),
+                "reviewed_only": retrieved["reviewed_only"]}
 
     # -- writes ----------------------------------------------------------------------
 
@@ -272,6 +323,9 @@ def make_handler(service: ReviewService, token: str):
                 if parts == ["graph"]:
                     reviewed = query.get("reviewed_only", ["0"])[0] in ("1", "true")
                     return self._json(HTTPStatus.OK, service.graph_export(reviewed))
+                if parts == ["neo4j", "graph"]:
+                    reviewed = query.get("reviewed_only", ["0"])[0] in ("1", "true")
+                    return self._json(HTTPStatus.OK, service.neo4j_graph_export(reviewed))
                 if parts == ["changes"]:
                     return self._json(HTTPStatus.OK, service.graph.changes())
                 return self._error(HTTPStatus.NOT_FOUND, "Not found")
@@ -308,13 +362,40 @@ def make_handler(service: ReviewService, token: str):
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "null")
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return self._error(HTTPStatus.BAD_REQUEST, "Body is not valid JSON")
+            if not isinstance(payload, dict):
+                return self._error(HTTPStatus.BAD_REQUEST, "Body must be a JSON object")
             parts = [part for part in route.split("/") if part][1:]
             try:
                 if len(parts) == 3 and parts[0] == "documents" and parts[2] == "review":
                     return self._json(HTTPStatus.OK, service.review(parts[1], payload))
+                if parts == ["neo4j", "sync"]:
+                    reviewed_only = payload.get("reviewed_only", False)
+                    if not isinstance(reviewed_only, bool):
+                        return self._error(HTTPStatus.BAD_REQUEST, "reviewed_only must be boolean")
+                    return self._json(HTTPStatus.OK, service.sync_neo4j(
+                        reviewed_only))
+                if parts == ["graph-rag"]:
+                    question = payload.get("question")
+                    if not isinstance(question, str) or not question.strip():
+                        return self._error(HTTPStatus.BAD_REQUEST, "question must be non-empty text")
+                    generate = payload.get("generate", False)
+                    include_unreviewed = payload.get("include_unreviewed", False)
+                    limit = payload.get("limit", 8)
+                    if not isinstance(generate, bool) or not isinstance(include_unreviewed, bool):
+                        return self._error(HTTPStatus.BAD_REQUEST,
+                                           "generate and include_unreviewed must be boolean")
+                    if not isinstance(limit, int) or isinstance(limit, bool):
+                        return self._error(HTTPStatus.BAD_REQUEST, "limit must be an integer")
+                    return self._json(HTTPStatus.OK, service.ask_graph(
+                        question, generate=generate,
+                        include_unreviewed=include_unreviewed, limit=limit))
                 return self._error(HTTPStatus.NOT_FOUND, "Not found")
             except ReviewError as exc:
                 return self._error(exc.status, exc.message)
+            except ValueError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            except Exception as exc:  # do not return provider or database details to the browser
+                return self._error(HTTPStatus.BAD_GATEWAY, f"{type(exc).__name__}")
 
         def do_HEAD(self):
             self.do_GET()
@@ -343,8 +424,14 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=int(os.getenv("REVIEW_PORT", "8765")))
     parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "::1", "localhost"])
     args = parser.parse_args(argv)
-    service = ReviewService(GraphStore(GRAPH_PATH), DocumentRegistry(DATABASE_PATH),
-                            Settings.from_env())
+    settings = Settings.from_env()
+    neo4j_driver = None
+    if os.getenv("NEO4J_URI") and os.getenv("NEO4J_PASSWORD"):
+        from ..neo4j_sync import create_driver
+        neo4j_driver = create_driver()
+    service = ReviewService(GraphStore(GRAPH_PATH), DocumentRegistry(DATABASE_PATH), settings,
+                            neo4j_driver=neo4j_driver,
+                            neo4j_database=os.getenv("NEO4J_DATABASE") or None)
     server = create_server(service, args.host, args.port, os.getenv("REVIEW_TOKEN") or None)
     host = f"[{args.host}]" if ":" in args.host else args.host
     print(f"Paper Trail review: http://{host}:{server.server_address[1]}/#token={server.review_token}")
@@ -355,6 +442,8 @@ def main(argv=None):
         pass
     finally:
         server.server_close()
+        if neo4j_driver is not None:
+            neo4j_driver.close()
 
 
 if __name__ == "__main__":

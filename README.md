@@ -172,6 +172,31 @@ python -m backend.app.review.server
 
 The review server binds to `127.0.0.1`; keep its one-time link private. Copy `.env.example` to `.env` to configure limits and providers. Queue-only remains the default. For labeled evaluation, use `backend.app.extraction.benchmark` and the validation split first; reserve the test split for a frozen, one-time final run. See [`docs/EVALUATION.md`](./docs/EVALUATION.md) and [`docs/DATA_HANDLING.md`](./docs/DATA_HANDLING.md). No accuracy improvement is established until that evaluation runs.
 
+### Neo4j graph view and Graph RAG
+
+SQLite remains the source of truth. To project the current graph into the local Neo4j instance, install the optional driver, set `NEO4J_URI`, `NEO4J_USERNAME`, and `NEO4J_PASSWORD` in `.env`, then run:
+
+```powershell
+python -m pip install -r backend/requirements-neo4j.txt
+python -m backend.app.neo4j_sync
+```
+
+The sync is repeatable and imports only the application's known node and relationship types. Add `--reviewed-only` to project only approved/corrected facts. Open Neo4j Browser at `http://localhost:7474` and try `MATCH (n:PaperTrail) RETURN n LIMIT 100`.
+
+Start the combined graph and chat review UI with:
+
+```powershell
+python -m backend.app.review.server
+```
+
+The Graph view can sync the SQLite graph to Neo4j and displays the full invoice relationship shape. Graph RAG uses bounded, read-only retrieval from the Neo4j projection. First inspect retrieved context without making an API call:
+
+```powershell
+python -m backend.app.graph_rag "Which invoices were issued by Acme Books?"
+```
+
+To ask the configured Anthropic model to summarize that context, configure `GRAPH_RAG_API_KEY` and `GRAPH_RAG_MODEL`, then explicitly set `PAPERTRAIL_ALLOW_GRAPH_RAG_REMOTE=I_ACCEPT_GRAPH_DATA_LEAVES_THIS_DEVICE` and pass `--generate`. The LLM cannot write to the graph; answers include the source invoice/document records returned by retrieval. The remote call is off by default.
+
 ## Example Expected Behaviour
 
 ### Ambiguous Entity Linking

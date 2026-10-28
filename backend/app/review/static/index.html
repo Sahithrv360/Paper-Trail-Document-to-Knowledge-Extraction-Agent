@@ -58,10 +58,33 @@
   <div class="graph-head">
     <label><input type="checkbox" id="reviewed-only"> Show reviewed support only</label>
     <span id="graph-counts"></span>
+    <div class="graph-tools">
+      <span id="graph-page-label"></span>
+      <button type="button" id="graph-prev" class="quiet" aria-label="Previous graph page">Previous</button>
+      <button type="button" id="graph-next" class="quiet" aria-label="Next graph page">Next</button>
+      <button type="button" id="sync-neo4j" class="primary">Sync SQLite graph to Neo4j</button>
+    </div>
   </div>
   <div class="graph-body">
-    <div class="graph-canvas"><svg id="graph-svg" role="img" aria-label="Knowledge graph"></svg></div>
-    <aside id="node-detail" class="node-detail"><p class="empty">Select a node to see its properties and supporting documents.</p></aside>
+    <section class="graph-explorer" aria-label="Neo4j graph">
+      <div class="graph-canvas"><svg id="graph-svg" role="img" aria-label="Neo4j knowledge graph"></svg></div>
+      <aside id="node-detail" class="node-detail"><p class="empty">Select a node to see its properties and supporting documents.</p></aside>
+    </section>
+    <aside class="chat-panel" aria-label="Ask the invoice graph">
+      <div class="chat-heading"><h2>Ask the graph</h2>
+        <p>Answers use facts retrieved from Neo4j and link back to source records.</p></div>
+      <label class="chat-option"><input type="checkbox" id="chat-reviewed-only" checked> Reviewed facts only</label>
+      <label class="chat-option"><input type="checkbox" id="chat-use-llm"> Generate answer with hosted LLM</label>
+      <div id="chat-messages" class="chat-messages" role="log" aria-live="polite">
+        <p class="chat-message assistant">Ask about an invoice number, vendor, customer, or line item.</p>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <label class="sr-only" for="chat-question">Question</label>
+        <textarea id="chat-question" rows="3" maxlength="2000" placeholder="Which invoices were issued by this vendor?"></textarea>
+        <button type="submit" class="primary">Ask</button>
+      </form>
+      <p class="chat-privacy">Hosted generation sends only retrieved graph facts when explicitly enabled and configured.</p>
+    </aside>
   </div>
   <div id="suggestions"></div>
 </main>

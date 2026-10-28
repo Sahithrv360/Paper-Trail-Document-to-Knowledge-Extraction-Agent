@@ -3,7 +3,7 @@
 
 const state = {
   token: "", docs: [], detail: null, page: 1, active: null, editing: false,
-  imageUrl: null, graph: null, selectedNode: null,
+  imageUrl: null, graph: null, selectedNode: null, graphPage: 0, graphPageSize: 20,
 };
 
 const HEADER_FIELDS = [
@@ -414,11 +414,29 @@ function renderHistory() {
 async function loadGraph() {
   try {
     const reviewed = $("reviewed-only").checked ? "1" : "0";
-    state.graph = await (await api(`/api/graph?reviewed_only=${reviewed}`)).json();
+    state.graph = await (await api(`/api/neo4j/graph?reviewed_only=${reviewed}`)).json();
     renderGraph();
   } catch (error) {
-    notify(`Could not load the graph: ${error.message}`, true);
+    state.graph = null;
+    $("graph-counts").textContent = "Neo4j graph is unavailable.";
+    notify(`Could not load the Neo4j graph: ${error.message}. Configure Neo4j and use Sync.`, true);
   }
+}
+
+async function syncNeo4j() {
+  const button = $("sync-neo4j"); button.disabled = true;
+  try {
+    const response = await api("/api/neo4j/sync", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewed_only: $("reviewed-only").checked }),
+    });
+    const result = await response.json();
+    state.graphPage = 0;
+    notify(`Synced ${result.nodes} nodes and ${result.edges} relationships to Neo4j.`);
+    await loadGraph();
+  } catch (error) {
+    notify(`Could not sync the Neo4j graph: ${error.message}`, true);
+  } finally { button.disabled = false; }
 }
 
 function nodeStatus(node) {
@@ -427,17 +445,35 @@ function nodeStatus(node) {
 
 function renderGraph() {
   const graph = state.graph;
+  if (!graph) return;
   const nodes = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
-  const columns = { Vendor: [], Invoice: [], Customer: [] };
-  graph.nodes.forEach((n) => columns[n.type] && columns[n.type].push(n));
+  const invoiceNodes = graph.nodes.filter((n) => n.type === "Invoice").sort((a, b) =>
+    String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id)));
+  const pageCount = Math.max(1, Math.ceil(invoiceNodes.length / state.graphPageSize));
+  state.graphPage = Math.min(state.graphPage, pageCount - 1);
+  const visibleInvoices = invoiceNodes.slice(state.graphPage * state.graphPageSize,
+    (state.graphPage + 1) * state.graphPageSize);
+  const invoiceIds = new Set(visibleInvoices.map((n) => n.id));
+  const edges = graph.edges.filter((e) => invoiceIds.has(e.source) || invoiceIds.has(e.target));
+  const visibleIds = new Set(invoiceIds);
+  edges.forEach((e) => { visibleIds.add(e.source); visibleIds.add(e.target); });
+  const visibleNodes = graph.nodes.filter((n) => visibleIds.has(n.id));
+  const columns = { Document: [], Vendor: [], Invoice: [], Customer: [], LineItem: [] };
+  visibleNodes.forEach((n) => columns[n.type] && columns[n.type].push(n));
   const itemCount = {};
   graph.edges.filter((e) => e.type === "CONTAINS").forEach((e) => { itemCount[e.source] = (itemCount[e.source] || 0) + 1; });
   const docOf = {};
   graph.edges.filter((e) => e.type === "SUPPORTS").forEach((e) => { docOf[e.target] = nodes[e.source]; });
-  const label = (n) => n.type === "Invoice"
-    ? [`${n.props.invoice_number || "(no number)"}`, `${(docOf[n.id] && docOf[n.id].props.filename) || ""}, ${itemCount[n.id] || 0} lines`]
-    : [n.props.name || n.id, n.props.tax_id ? `Tax ID ${n.props.tax_id}` : "No tax ID"];
-  const W = 250, H = 46, GAP = 14, X = { Vendor: 24, Invoice: 344, Customer: 664 };
+  const label = (n) => {
+    if (n.type === "Document") return [n.props.filename || n.id, `Document · v${n.props.version ?? "?"}`];
+    if (n.type === "Invoice") return [n.props.invoice_number || "(no number)",
+      `${n.props.invoice_date || "date unknown"} · ${itemCount[n.id] || 0} item(s)`];
+    if (n.type === "LineItem") return [n.props.description || "(no description)",
+      `Row ${(n.props.row_index ?? 0) + 1} · gross ${n.props.gross_amount ?? "unknown"}`];
+    return [n.props.name || n.id, n.props.tax_id ? `Tax ID ${n.props.tax_id}` : "No tax ID"];
+  };
+  const W = 180, H = 46, GAP = 13;
+  const X = { Document: 16, Vendor: 256, Invoice: 496, Customer: 736, LineItem: 976 };
   const position = {};
   Object.entries(columns).forEach(([type, list]) => {
     list.sort((a, b) => label(a)[0].localeCompare(label(b)[0]));
@@ -445,21 +481,24 @@ function renderGraph() {
   });
   const rows = Math.max(1, ...Object.values(columns).map((l) => l.length));
   const root = $("graph-svg");
-  root.setAttribute("viewBox", `0 0 ${X.Customer + W + 24} ${48 + rows * (H + GAP) + 16}`);
-  root.setAttribute("width", X.Customer + W + 24);
+  root.setAttribute("viewBox", `0 0 ${X.LineItem + W + 24} ${48 + rows * (H + GAP) + 16}`);
+  root.setAttribute("width", X.LineItem + W + 24);
   root.setAttribute("height", 48 + rows * (H + GAP) + 16);
   const selected = state.selectedNode;
-  const edges = graph.edges.filter((e) => (e.type === "ISSUED" || e.type === "BILLED_TO") && position[e.source] && position[e.target]);
+  const visibleEdges = edges.filter((e) => position[e.source] && position[e.target]);
+  const edgeLabel = { SUPPORTS: "supports", ISSUED: "issued", BILLED_TO: "billed to", CONTAINS: "contains" };
   const children = [
-    svg("text", { x: X.Vendor, y: 28, class: "col-title", text: `Vendors (${columns.Vendor.length})` }),
-    svg("text", { x: X.Invoice, y: 28, class: "col-title", text: `Invoices (${columns.Invoice.length})` }),
-    svg("text", { x: X.Customer, y: 28, class: "col-title", text: `Customers (${columns.Customer.length})` }),
-    ...edges.map((e) => {
+    ...Object.entries(columns).map(([type, list]) => svg("text", {
+      x: X[type], y: 28, class: "col-title", text: `${type === "LineItem" ? "Line items" : `${type}s`} (${list.length})`,
+    })),
+    ...visibleEdges.map((e) => {
       const a = position[e.source], b = position[e.target];
       const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2, mid = (x1 + x2) / 2;
       const on = selected && (e.source === selected || e.target === selected);
-      return svg("path", { class: `edge${on ? " on" : ""}`, d: `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}` },
-        svg("title", { text: e.type === "ISSUED" ? "issued" : "billed to" }));
+      return svg("g", {},
+        svg("path", { class: `edge${on ? " on" : ""}`, d: `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}` },
+          svg("title", { text: edgeLabel[e.type] || e.type })),
+        svg("text", { class: "edge-label", x: mid, y: (y1 + y2) / 2 - 3, text: edgeLabel[e.type] || e.type }));
     }),
     ...Object.entries(position).map(([id, p]) => {
       const n = nodes[id]; const [line1, line2] = label(n);
@@ -468,25 +507,47 @@ function renderGraph() {
         tabindex: "0", role: "button", "aria-label": `${n.type} ${line1}`,
         onclick: () => selectNode(id), onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(id); } },
       }, svg("rect", { width: W, height: H }),
-      svg("text", { x: 10, y: 19, text: truncate(line1, 34) }),
-      svg("text", { x: 10, y: 36, class: "col-title", text: truncate(line2, 38) }));
+      svg("text", { x: 8, y: 19, text: truncate(line1, 24) }),
+      svg("text", { x: 8, y: 36, class: "col-title", text: truncate(line2, 24) }));
     }),
   ];
   fill(root, ...children);
-  $("graph-counts").textContent = `${graph.nodes.length} nodes, ${graph.edges.length} edges` +
+  $("graph-counts").textContent = `${visibleNodes.length} visible / ${graph.nodes.length} total nodes · ${visibleEdges.length} visible relationships` +
     (graph.nodes.length ? ". Dashed outline: some support still needs review." : ". Nothing to show yet.");
+  $("graph-page-label").textContent = invoiceNodes.length
+    ? `Invoices ${state.graphPage * state.graphPageSize + 1}–${Math.min((state.graphPage + 1) * state.graphPageSize, invoiceNodes.length)} of ${invoiceNodes.length} · `
+      + `page ${state.graphPage + 1}/${pageCount}` : "No invoices";
+  $("graph-prev").disabled = state.graphPage <= 0;
+  $("graph-next").disabled = state.graphPage >= pageCount - 1;
   renderSuggestions(graph);
   if (selected && nodes[selected]) renderNodeDetail(nodes[selected], docOf);
 }
 
 const truncate = (text, n) => (String(text).length > n ? `${String(text).slice(0, n - 1)}…` : String(text));
 
-function selectNode(id) { state.selectedNode = id; renderGraph(); }
+function focusGraphNode(id) {
+  state.selectedNode = id;
+  const invoiceNodes = state.graph.nodes.filter((n) => n.type === "Invoice").sort((a, b) =>
+    String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id)));
+  let invoiceId = invoiceNodes.some((n) => n.id === id) ? id : null;
+  if (!invoiceId) {
+    const relation = state.graph.edges.find((edge) => edge.source === id || edge.target === id);
+    if (relation) invoiceId = [relation.source, relation.target].find((nodeId) =>
+      invoiceNodes.some((node) => node.id === nodeId)) || null;
+  }
+  const invoiceIndex = invoiceNodes.findIndex((n) => n.id === invoiceId);
+  if (invoiceIndex >= 0) state.graphPage = Math.floor(invoiceIndex / state.graphPageSize);
+  renderGraph();
+}
+
+function selectNode(id) { focusGraphNode(id); }
 
 function renderNodeDetail(node, docOf) {
   const props = Object.entries(node.props).filter(([k, v]) => k !== "variants" && k !== "match_key" && v !== null && typeof v !== "object");
   const panel = $("node-detail");
-  const documentId = node.type === "Invoice" && docOf[node.id] ? docOf[node.id].props.document_id : null;
+  const documentId = node.type === "Document"
+    ? (node.props.document_id || node.id.slice("Document:".length))
+    : (node.type === "Invoice" && docOf[node.id] ? docOf[node.id].props.document_id : null);
   fill(panel,
     el("h2", { text: `${node.type}` }),
     el("dl", { class: "props" }, ...props.flatMap(([k, v]) => [el("dt", { text: k.replace(/_/g, " ") }), el("dd", { text: String(v) })])),
@@ -502,10 +563,49 @@ function documentName(id) { const doc = state.docs.find((d) => d.document_id ===
 
 function renderSuggestions(graph) {
   const items = [
-    ...graph.suggestions.map((s) => el("li", { text: `${s.reason === "same_name_different_tax_id" ? "Same name, different tax ID" : "Same tax ID, different name"}: ${s.node_ids.length} ${s.type.toLowerCase()} nodes kept separate.` })),
-    ...graph.duplicates.map((d) => el("li", { text: `Identical files: ${d.documents.map((x) => x.source_file).join(", ")}` })),
+    ...(graph.suggestions || []).map((s) => el("li", { text: `${s.reason === "same_name_different_tax_id" ? "Same name, different tax ID" : "Same tax ID, different name"}: ${s.node_ids.length} ${s.type.toLowerCase()} nodes kept separate.` })),
+    ...(graph.duplicates || []).map((d) => el("li", { text: `Identical files: ${d.documents.map((x) => x.source_file).join(", ")}` })),
   ];
   fill($("suggestions"), ...(items.length ? [el("h2", { text: "Possible duplicates to check" }), el("ul", {}, ...items)] : []));
+}
+
+function addChatMessage(role, text, sources = [], isError = false) {
+  const container = $("chat-messages");
+  const message = el("p", { class: `chat-message ${role}${isError ? " error" : ""}`, text });
+  const sourceButtons = sources.map((source) => {
+    const label = source.invoice_number ? `Invoice ${source.invoice_number}`
+      : source.filename || `${source.type} ${source.id}`;
+    return el("button", { type: "button", title: `${source.id} · ${source.review_status || "review status unavailable"}`,
+      text: `${label} · ${source.review_status || "unreviewed"}`,
+      onclick: () => focusGraphNode(source.id) });
+  });
+  const row = el("div", {}, message, sourceButtons.length ? el("div", { class: "chat-sources" }, ...sourceButtons) : null);
+  container.append(row);
+  while (container.children.length > 40) container.firstElementChild.remove();
+  container.scrollTop = container.scrollHeight;
+}
+
+async function askGraph(event) {
+  event.preventDefault();
+  const input = $("chat-question"), question = input.value.trim();
+  if (!question) return;
+  input.value = "";
+  addChatMessage("user", question);
+  const button = $("chat-form").querySelector("button[type=submit]"); button.disabled = true;
+  try {
+    const response = await api("/api/graph-rag", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, generate: $("chat-use-llm").checked,
+        include_unreviewed: !$("chat-reviewed-only").checked, limit: 8 }),
+    });
+    const result = await response.json();
+    const answer = result.context_truncated
+      ? `${result.answer}\n\nSome matching connections were omitted by the retrieval limit; treat lists or totals as partial.`
+      : result.answer;
+    addChatMessage("assistant", answer, result.sources || []);
+  } catch (error) {
+    addChatMessage("assistant", error.message, [], true);
+  } finally { button.disabled = false; input.focus(); }
 }
 
 // ---------- changes ----------
@@ -551,7 +651,11 @@ function init() {
   $("save").addEventListener("click", () => submitReview("corrected"));
   $("prev-page").addEventListener("click", () => { state.page -= 1; loadPage(); });
   $("next-page").addEventListener("click", () => { state.page += 1; loadPage(); });
-  $("reviewed-only").addEventListener("change", loadGraph);
+  $("reviewed-only").addEventListener("change", () => { state.graphPage = 0; loadGraph(); });
+  $("graph-prev").addEventListener("click", () => { state.graphPage = Math.max(0, state.graphPage - 1); renderGraph(); });
+  $("graph-next").addEventListener("click", () => { state.graphPage += 1; renderGraph(); });
+  $("sync-neo4j").addEventListener("click", syncNeo4j);
+  $("chat-form").addEventListener("submit", askGraph);
   window.addEventListener("resize", drawBoxes);
   if (!state.token) { notify("Open the review link printed by the server; it carries the access token.", true); return; }
   loadDocuments();

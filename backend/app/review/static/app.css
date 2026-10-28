@@ -82,11 +82,30 @@ table.grid { width: 100%; border-collapse: collapse; font-size: .88rem; }
 .history { margin-top: 1.25rem; font-size: .88rem; }
 .history li { margin: .2rem 0; }
 
-.graph { padding: 1rem; height: calc(100vh - 3.2rem); display: grid; grid-template-rows: auto 1fr auto; gap: .75rem; }
-.graph-head { display: flex; gap: 1.5rem; align-items: center; color: var(--ink-soft); }
-.graph-body { display: grid; grid-template-columns: minmax(0, 1fr) 22rem; gap: 1rem; min-height: 0; }
-.graph-canvas { overflow: auto; background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; }
+.graph { padding: 1rem; height: calc(100vh - 3.2rem); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: .75rem; }
+.graph-head { display: flex; flex-wrap: wrap; gap: .8rem 1rem; align-items: center; color: var(--ink-soft); }
+.graph-head > #graph-counts { flex: 1; min-width: 15rem; }
+.graph-tools { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; }
+.graph-tools button { white-space: nowrap; }
+.graph-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 25rem); gap: 1rem; min-height: 0; }
+.graph-explorer { display: grid; grid-template-rows: minmax(15rem, 1fr) minmax(8rem, 13rem); gap: .75rem; min-width: 0; min-height: 0; }
+.graph-canvas { overflow: auto; min-height: 0; background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; }
 .node-detail { overflow: auto; background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: .9rem; font-size: .88rem; }
+.chat-panel { display: grid; grid-template-rows: auto auto auto minmax(8rem, 1fr) auto auto; gap: .6rem; min-height: 0; padding: .9rem; background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; }
+.chat-heading p, .chat-privacy { margin: .25rem 0 0; color: var(--ink-soft); font-size: .82rem; }
+.chat-option { display: flex; gap: .45rem; align-items: center; color: var(--ink-soft); font-size: .88rem; }
+.chat-messages { overflow: auto; padding: .65rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); }
+.chat-message { margin: 0 0 .6rem; padding: .55rem .65rem; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-message:last-child { margin-bottom: 0; }
+.chat-message.user { background: var(--pencil-wash); }
+.chat-message.assistant { background: var(--sheet); border: 1px solid var(--rule); }
+.chat-message.error { color: var(--bad); }
+.chat-sources { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .5rem; }
+.chat-sources button { font-size: .78rem; padding: .2rem .45rem; }
+.chat-form { display: grid; gap: .45rem; }
+.chat-form textarea { width: 100%; min-height: 4rem; resize: vertical; padding: .55rem; border: 1px solid var(--rule); border-radius: 6px; }
+.chat-form button { justify-self: end; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 svg text { font: 12px var(--ui); fill: var(--ink); }
 svg .col-title { font-weight: 600; fill: var(--ink-soft); }
 svg .edge { stroke: var(--rule); stroke-width: 1.4; fill: none; }
@@ -109,12 +128,17 @@ dl.props dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 1100px) {
   .review { grid-template-columns: 13rem minmax(0, 1fr); height: auto; }
   .fields { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--rule); }
-  .graph-body { grid-template-columns: 1fr; }
+  .graph { height: auto; min-height: calc(100vh - 3.2rem); }
+  .graph-body { grid-template-columns: 1fr; grid-template-rows: minmax(38rem, 65vh) minmax(28rem, 50vh); }
+  .graph-explorer { grid-template-rows: minmax(25rem, 1fr) minmax(8rem, 12rem); }
 }
 @media (max-width: 700px) {
   .review { grid-template-columns: 1fr; }
   .bar { flex-wrap: wrap; gap: .6rem; }
   .reviewer { margin-left: 0; }
+  .graph-tools { width: 100%; }
+  .graph-head > #graph-counts { min-width: 100%; }
+  .graph-body { grid-template-rows: minmax(34rem, 70vh) minmax(28rem, 55vh); }
 }
 @media (prefers-reduced-motion: no-preference) {
   .box { transition: border-color .12s, background-color .12s; }

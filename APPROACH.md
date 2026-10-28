@@ -6,7 +6,7 @@ This document describes the agreed MVP direction. Paper Trail turns invoices int
 
 The MVP focuses on invoices. It accepts files through the existing watched-folder workflow, uses the current extraction providers, validates the result, records evidence and review history, and builds typed invoice relationships. OCR/model accuracy improvement is not the active phase; use the extracted details already available to complete and verify graph mapping.
 
-The current backend stores its source ledger and deterministic graph in SQLite. The local review server exposes document details, review actions, graph exports, provenance, and review status. A Neo4j container is running locally, but the application does not yet sync its SQLite graph into Neo4j. Neo4j will be a visualization and query projection; SQLite remains the source of truth.
+The current backend stores its source ledger and deterministic graph in SQLite. The local review server exposes document details, review actions, provenance, and review status. An optional Neo4j projection can be synced from SQLite and read by the graph view and chat; configure Neo4j locally before using those features. SQLite remains the source of truth.
 
 ## Graph Mapping
 
@@ -25,7 +25,7 @@ The Neo4j sync must be repeatable, preserve node and edge provenance/review stat
 
 ## Graph RAG and LLM
 
-After graph sync is reliable, add read-only question answering over Neo4j. A bounded retriever finds relevant invoices and their connected parties, line items, and source documents. The LLM receives only that retrieved subgraph and returns a concise answer with invoice/document IDs and review status as citations. If the retrieved facts do not support an answer, it must say so.
+The Graph view and chat share the local review app. A bounded, read-only retriever searches Neo4j and expands relevant nodes to their connected parties, line items, and source documents. The LLM receives only that retrieved subgraph and returns a concise answer with invoice/document IDs and review status as citations. If the retrieved facts do not support an answer, it must say so.
 
 Use parameterized, allowlisted Cypher templates for retrieval; do not ask the LLM to write queries. Default answers should use approved or corrected facts. If unreviewed facts are included, label them clearly. The LLM may explain retrieved relationships, but must not create, merge, correct, or delete graph facts. Begin with lexical/structured graph retrieval; add embeddings only if evaluation shows that exact and lexical matching cannot find relevant item descriptions.
 
@@ -33,9 +33,9 @@ Hosted generation is off by default. Add a separate explicit opt-in for sending 
 
 ## Delivery Order and Exit Checks
 
-1. **Neo4j projection:** sync the existing SQLite graph to Neo4j with stable IDs, typed edges, review status, source support, and safe repeat-run behavior. Verify the sample invoice in Neo4j Browser and verify a shared vendor connects multiple invoices.
-2. **Graph RAG command/service:** answer a small set of invoice questions from retrieved graph context, with source citations and an abstention response for unsupported questions. Keep the LLM call optional and gated.
-3. **End-to-end check:** process existing extracted records, review/approve them, sync the graph, and confirm answers reflect the reviewed values and source documents. Record exact commands and limitations for teammates.
+1. **Neo4j projection:** implemented as a repeatable CLI and review-app action, with stable IDs, typed edges, support status, and stale-fact cleanup. Still needs a run against the configured local Neo4j instance.
+2. **Graph and chat UI:** implemented in the existing local review app. The graph is read from Neo4j; answers use bounded retrieval, link to source invoice/document nodes, and abstain when facts are missing. Hosted LLM generation is optional and separately gated.
+3. **End-to-end check:** pending. Sync and inspect existing extractions, review/approve records, and confirm chat answers reflect the reviewed graph and source documents. Record the tested commands and remaining limits for teammates.
 
 Tests should cover mapping, edge direction, repeat sync, stale-fact cleanup, review filtering, retrieval boundaries, citations, and abstention. Do not claim extraction accuracy improvements in this phase. Keep `.env`, credentials, customer invoices, database files, and local evaluation artifacts out of Git.
 
