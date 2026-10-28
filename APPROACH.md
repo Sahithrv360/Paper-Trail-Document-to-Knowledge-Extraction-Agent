@@ -1,54 +1,44 @@
 # Paper Trail — Approach & Build
 
-This document describes the intended solution and how the team will build it. The repository is an evolving prototype; current implementation and measured results are called out separately from planned capabilities. The engineering record is in [`docs/SDD.md`](docs/SDD.md), and the phased delivery sequence is in [`docs/build-plan.md`](docs/build-plan.md).
+This document describes the agreed MVP direction. Paper Trail turns invoices into reviewable, evidence-linked facts and a graph that users can inspect and query. The implementation record is in [`docs/SDD.md`](docs/SDD.md), with data rules in [`docs/DATA_CONTRACTS.md`](docs/DATA_CONTRACTS.md) and current milestones in [`docs/build-plan.md`](docs/build-plan.md).
 
-## Who this is for
+## MVP Scope
 
-The first users are procurement or finance operations staff who receive invoices and contracts and need to check key facts against source documents. Reviewers need to see where each extracted value came from, understand uncertainty, and decide when a vendor match needs human attention. Developers and evaluators need repeatable runs and traceable outputs. The prototype is not intended to make legal decisions, trigger payments, or update authoritative enterprise records.
+The MVP focuses on invoices. It accepts files through the existing watched-folder workflow, uses the current extraction providers, validates the result, records evidence and review history, and builds typed invoice relationships. OCR/model accuracy improvement is not the active phase; use the extracted details already available to complete and verify graph mapping.
 
-## Problem and outcome
+The current backend stores its source ledger and deterministic graph in SQLite. The local review server exposes document details, review actions, graph exports, provenance, and review status. A Neo4j container is running locally, but the application does not yet sync its SQLite graph into Neo4j. Neo4j will be a visualization and query projection; SQLite remains the source of truth.
 
-OCR and PDF parsing make text readable but do not establish which entities it refers to, how they relate, or whether a statement is conditional. Paper Trail aims to turn procurement documents into structured, evidence-backed knowledge while preserving ambiguity and source provenance.
+## Graph Mapping
 
-The target scope includes invoices and contracts, digital and scanned PDFs, extraction, evidence validation, conservative master-record linking, human review, and repeatable evaluation. The first implemented vertical slice is narrower: local watched-folder processing for JPG/PNG invoices, a pretrained Donut model, validation, and SQLite persistence. PDF extraction, contract understanding, a review interface, and live master-data integration are planned, not implemented.
+Use the existing ontology and stable IDs from `backend/app/graph_ontology.py`:
 
-## Build versus reuse
+```text
+(Document)-[:SUPPORTS]->(Invoice)
+(Vendor)-[:ISSUED]->(Invoice)
+(Invoice)-[:BILLED_TO]->(Customer)
+(Invoice)-[:CONTAINS]->(LineItem)
+```
 
-- **Reuse:** the existing folder watcher and job registry, canonical invoice schema, Donut checkpoint adapter, dataset/evaluation utilities, SQLite graph store, synthetic invoice fixture, and public invoice dataset for an offline baseline. Dataset provenance is documented in `data/README.md`.
-- **Build:** the missing reviewer experience, evidence-aware extraction path, PDF/OCR integration, conservative candidate linking, and labelled evaluation cases for the target behaviours.
-- **Defer:** replacing the pretrained model, hosted model calls, enterprise master-data connectors, and production deployment. These depend on privacy constraints and measured validation performance. Future linking should consume an approved source of master records; this project does not recreate an enterprise warehouse.
+Invoice identity uses the document ID, because invoice numbers can repeat. Vendor and customer nodes are shared only when the existing exact match key agrees; do not fuzzy-merge parties. Line items belong to one invoice and use document ID plus row position. Cross-invoice paths emerge through shared, supported vendors or customers. Do not invent item similarity or taxonomy links.
 
-## Architecture
+The Neo4j sync must be repeatable, preserve node and edge provenance/review status, and remove stale Paper Trail projection facts safely when a source version changes. Only allow the known ontology labels and relationship types. Never execute model-generated Cypher or accept model output as a graph write.
 
-The proposed flow is document intake → text extraction/OCR → fact and relationship extraction → schema and evidence validation → candidate generation and conservative entity resolution → human review when uncertain → structured storage and evaluation. Deterministic code handles file validation, schema enforcement, persistence, access controls, and metric calculation. A replaceable model component may interpret document language, but its confidence statement alone is not proof of a fact or identity.
+## Graph RAG and LLM
 
-The current architecture image is [`assests/paper-trail-architecture.png`](assests/paper-trail-architecture.png). It is a starting point; implementation status and gaps are recorded in [`docs/SDD.md`](docs/SDD.md).
+After graph sync is reliable, add read-only question answering over Neo4j. A bounded retriever finds relevant invoices and their connected parties, line items, and source documents. The LLM receives only that retrieved subgraph and returns a concise answer with invoice/document IDs and review status as citations. If the retrieved facts do not support an answer, it must say so.
 
-### Human review and failure paths
+Use parameterized, allowlisted Cypher templates for retrieval; do not ask the LLM to write queries. Default answers should use approved or corrected facts. If unreviewed facts are included, label them clearly. The LLM may explain retrieved relationships, but must not create, merge, correct, or delete graph facts. Begin with lexical/structured graph retrieval; add embeddings only if evaluation shows that exact and lexical matching cannot find relevant item descriptions.
 
-- Ambiguous entity matches remain unresolved until reviewed.
-- Unsupported or contradictory claims are flagged.
-- Invalid output is retried only under a controlled policy; persistent failures are visible.
-- Unreadable documents and OCR failures are surfaced.
-- No uncertain link is silently turned into an authoritative relationship.
-- Review decisions should be recorded with provenance when that capability is implemented.
+Hosted generation is off by default. Add a separate explicit opt-in for sending retrieved invoice details to a hosted model, reuse configured model credentials where suitable, and never log prompts or answers containing invoice data. A local model can be considered later if hardware and latency measurements support it.
 
-## Data and evaluation
+## Delivery Order and Exit Checks
 
-Use synthetic documents and synthetic master records for product development. Keep development and held-out evaluation data separate and document data provenance and licences. The initial semantic model includes Vendor, Invoice, Contract, PaymentTerm, and RenewalClause, with source mentions kept distinct from resolved master entities.
+1. **Neo4j projection:** sync the existing SQLite graph to Neo4j with stable IDs, typed edges, review status, source support, and safe repeat-run behavior. Verify the sample invoice in Neo4j Browser and verify a shared vendor connects multiple invoices.
+2. **Graph RAG command/service:** answer a small set of invoice questions from retrieved graph context, with source citations and an abstention response for unsupported questions. Keep the LLM call optional and gated.
+3. **End-to-end check:** process existing extracted records, review/approve them, sync the graph, and confirm answers reflect the reviewed values and source documents. Record exact commands and limitations for teammates.
 
-Required challenge cases include an ambiguous vendor name and a contract clause stating renewal may occur only by mutual consent. The system must not force the vendor link or represent conditional renewal as completed or guaranteed.
+Tests should cover mapping, edge direction, repeat sync, stale-fact cleanup, review filtering, retrieval boundaries, citations, and abstention. Do not claim extraction accuracy improvements in this phase. Keep `.env`, credentials, customer invoices, database files, and local evaluation artifacts out of Git.
 
-Evaluation should measure entity and relationship precision/recall/F1, evidence support, linking and candidate ranking, conditional-language interpretation, abstention, schema validity, failures, latency, cost where measurable, and reviewer corrections. Report sample counts, configuration, and limitations. The recorded five-row Donut test baseline is 28/75 exact fields (37.3%) and 0/5 exact documents; it is a small baseline, not evidence of general accuracy or improvement.
+## Existing Capabilities and Deferred Work
 
-## UX prototype and build plan
-
-The static reviewer-flow sketch is [`docs/prototype.html`](docs/prototype.html). It shows a document queue, extracted facts, source evidence, and an unresolved vendor match. It uses sample content and is not connected to project data or an API.
-
-The build phases and exit evidence are in [`docs/build-plan.md`](docs/build-plan.md). The next technical increment is page-aware PDF/OCR ingestion with evidence spans and labelled validation, followed by a minimal review surface.
-
-## Risks and guardrails
-
-Hallucinated facts, incorrect entity links, OCR errors, conditional-language mistakes, privacy exposure, evaluation leakage, and uncontrolled model costs are the main risks. Require source evidence, validate outputs in code, abstain on weak matches, use synthetic data initially, keep secrets out of version control, and do not send sensitive documents to hosted services without approval. Do not claim a quality gain until it is measured on labelled validation data.
-
-Open decisions include provider approval, deployment restrictions, expected document volume, retention rules, evaluation thresholds, and the review process. Actual implementation and results should remain synchronized with `docs/SDD.md` and `artefact.md`.
+The repository already contains folder ingestion, Donut/Tesseract/RapidOCR and an opt-in vision API path, canonical invoice schema, arithmetic/evidence validation, SQLite ledger and graph, local reviewer UI, and a benchmark harness. Dataset-based OCR/model comparison has not been established; this phase does not change that. Defer contracts, production deployment, enterprise connectors, product taxonomy, automatic fuzzy entity resolution, and graph writes from LLM output until the invoice MVP is demonstrated.
