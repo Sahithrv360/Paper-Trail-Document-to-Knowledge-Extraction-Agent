@@ -3,7 +3,8 @@
 
 const state = {
   token: "", docs: [], detail: null, page: 1, active: null, editing: false,
-  imageUrl: null, graph: null, selectedNode: null, graphPage: 0, graphPageSize: 20,
+  imageUrl: null, graph: null, selectedNode: null, graphPage: 0, graphPageSize: 8,
+  showLineItems: false, lineItemsForInvoice: null,
 };
 
 const HEADER_FIELDS = [
@@ -454,26 +455,41 @@ function renderGraph() {
   const visibleInvoices = invoiceNodes.slice(state.graphPage * state.graphPageSize,
     (state.graphPage + 1) * state.graphPageSize);
   const invoiceIds = new Set(visibleInvoices.map((n) => n.id));
-  const edges = graph.edges.filter((e) => invoiceIds.has(e.source) || invoiceIds.has(e.target));
+  const selected = state.selectedNode;
+  const selectedNode = nodes[selected];
+  const selectedInvoice = selectedNode && selectedNode.type === "Invoice" ? selectedNode.id : null;
+  const lineItemInvoice = state.lineItemsForInvoice || selectedInvoice;
+  if (state.showLineItems && (!lineItemInvoice || !invoiceIds.has(lineItemInvoice))) {
+    state.showLineItems = false;
+    state.lineItemsForInvoice = null;
+  }
+  const invoiceLinks = new Set(["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"]);
+  const edges = graph.edges.filter((edge) => {
+    if (invoiceLinks.has(edge.type)) return invoiceIds.has(edge.source) && invoiceIds.has(edge.target);
+    return edge.type === "CONTAINS" && state.showLineItems &&
+      edge.source === lineItemInvoice && invoiceIds.has(edge.source);
+  });
   const visibleIds = new Set(invoiceIds);
   edges.forEach((e) => { visibleIds.add(e.source); visibleIds.add(e.target); });
   const visibleNodes = graph.nodes.filter((n) => visibleIds.has(n.id));
-  const columns = { Document: [], Vendor: [], Invoice: [], Customer: [], LineItem: [] };
+  const columns = { Invoice: [] };
+  if (state.showLineItems) columns.LineItem = [];
   visibleNodes.forEach((n) => columns[n.type] && columns[n.type].push(n));
   const itemCount = {};
   graph.edges.filter((e) => e.type === "CONTAINS").forEach((e) => { itemCount[e.source] = (itemCount[e.source] || 0) + 1; });
   const docOf = {};
   graph.edges.filter((e) => e.type === "SUPPORTS").forEach((e) => { docOf[e.target] = nodes[e.source]; });
   const label = (n) => {
-    if (n.type === "Document") return [n.props.filename || n.id, `Document · v${n.props.version ?? "?"}`];
+    if (n.type === "Document") return [n.props.filename || n.id, `Document | v${n.props.version ?? "?"}`];
     if (n.type === "Invoice") return [n.props.invoice_number || "(no number)",
-      `${n.props.invoice_date || "date unknown"} · ${itemCount[n.id] || 0} item(s)`];
+      `${n.props.invoice_date || "date unknown"} | ${itemCount[n.id] || 0} item(s)`];
     if (n.type === "LineItem") return [n.props.description || "(no description)",
-      `Row ${(n.props.row_index ?? 0) + 1} · gross ${n.props.gross_amount ?? "unknown"}`];
+      `Row ${(n.props.row_index ?? 0) + 1} | gross ${n.props.gross_amount ?? "unknown"}`];
     return [n.props.name || n.id, n.props.tax_id ? `Tax ID ${n.props.tax_id}` : "No tax ID"];
   };
   const W = 180, H = 46, GAP = 13;
-  const X = { Document: 16, Vendor: 256, Invoice: 496, Customer: 736, LineItem: 976 };
+  const X = { Invoice: 32, LineItem: 320 };
+  const columnTitles = { Invoice: "Invoices · linked by shared facts", LineItem: "Selected invoice items" };
   const position = {};
   Object.entries(columns).forEach(([type, list]) => {
     list.sort((a, b) => label(a)[0].localeCompare(label(b)[0]));
@@ -481,29 +497,39 @@ function renderGraph() {
   });
   const rows = Math.max(1, ...Object.values(columns).map((l) => l.length));
   const root = $("graph-svg");
-  root.setAttribute("viewBox", `0 0 ${X.LineItem + W + 24} ${48 + rows * (H + GAP) + 16}`);
-  root.setAttribute("width", X.LineItem + W + 24);
+  const graphWidth = (state.showLineItems ? X.LineItem : X.Invoice) + W + 64;
+  root.setAttribute("viewBox", `0 0 ${graphWidth} ${48 + rows * (H + GAP) + 16}`);
+  root.setAttribute("width", graphWidth);
   root.setAttribute("height", 48 + rows * (H + GAP) + 16);
-  const selected = state.selectedNode;
   const visibleEdges = edges.filter((e) => position[e.source] && position[e.target]);
-  const edgeLabel = { SUPPORTS: "supports", ISSUED: "issued", BILLED_TO: "billed to", CONTAINS: "contains" };
+  const relationTypes = ["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS", "CONTAINS"];
   const children = [
+    svg("defs", {}, ...relationTypes.map((type) => svg("marker", {
+      id: `arrow-${type}`, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6",
+      markerHeight: "6", orient: "auto-start-reverse",
+    }, svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: `arrow ${type.toLowerCase()}` })))),
     ...Object.entries(columns).map(([type, list]) => svg("text", {
-      x: X[type], y: 28, class: "col-title", text: `${type === "LineItem" ? "Line items" : `${type}s`} (${list.length})`,
+      x: X[type], y: 28, class: "col-title", text: `${columnTitles[type]} (${list.length})`,
     })),
     ...visibleEdges.map((e) => {
       const a = position[e.source], b = position[e.target];
-      const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2, mid = (x1 + x2) / 2;
+      const sameColumn = a.x === b.x;
+      const x1 = sameColumn ? a.x + W / 2 : a.x + W;
+      const x2 = sameColumn ? b.x + W / 2 : b.x;
+      const y1 = a.y + H / 2, y2 = b.y + H / 2, mid = (y1 + y2) / 2;
       const on = selected && (e.source === selected || e.target === selected);
-      return svg("g", {},
-        svg("path", { class: `edge${on ? " on" : ""}`, d: `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}` },
-          svg("title", { text: edgeLabel[e.type] || e.type })),
-        svg("text", { class: "edge-label", x: mid, y: (y1 + y2) / 2 - 3, text: edgeLabel[e.type] || e.type }));
+      const relation = e.type.toLowerCase();
+      return svg("path", { class: `edge ${relation}${on ? " on" : ""}`,
+        "marker-end": `url(#arrow-${e.type})`,
+        d: sameColumn ? `M${x1},${y1} C${x1 + 120},${mid} ${x2 + 120},${mid} ${x2},${y2}`
+          : `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}` },
+      svg("title", { text: e.type.replace(/_/g, " ").toLowerCase() }));
     }),
     ...Object.entries(position).map(([id, p]) => {
       const n = nodes[id]; const [line1, line2] = label(n);
       return svg("g", {
-        class: `node ${nodeStatus(n)}${selected === id ? " on" : ""}`, transform: `translate(${p.x},${p.y})`,
+        class: `node ${n.type.toLowerCase()} ${nodeStatus(n)}${selected === id ? " on" : ""}`,
+        transform: `translate(${p.x},${p.y})`,
         tabindex: "0", role: "button", "aria-label": `${n.type} ${line1}`,
         onclick: () => selectNode(id), onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(id); } },
       }, svg("rect", { width: W, height: H }),
@@ -512,8 +538,14 @@ function renderGraph() {
     }),
   ];
   fill(root, ...children);
-  $("graph-counts").textContent = `${visibleNodes.length} visible / ${graph.nodes.length} total nodes · ${visibleEdges.length} visible relationships` +
-    (graph.nodes.length ? ". Dashed outline: some support still needs review." : ". Nothing to show yet.");
+  const invoiceLinkCount = visibleEdges.filter((edge) => invoiceLinks.has(edge.type)).length;
+  $("graph-counts").textContent = invoiceLinkCount
+    ? `${visibleInvoices.length} invoices · ${invoiceLinkCount} shared-fact links shown`
+    : `${visibleInvoices.length} invoices · no shared-fact links on this page; select an invoice for its vendor, customer, and items`;
+  const itemToggle = $("show-line-items");
+  itemToggle.disabled = !selectedInvoice;
+  itemToggle.checked = state.showLineItems && Boolean(selectedInvoice);
+  $("item-graph-control").title = selectedInvoice ? "Expand this invoice's line items in the graph" : "Select an invoice node first";
   $("graph-page-label").textContent = invoiceNodes.length
     ? `Invoices ${state.graphPage * state.graphPageSize + 1}–${Math.min((state.graphPage + 1) * state.graphPageSize, invoiceNodes.length)} of ${invoiceNodes.length} · `
       + `page ${state.graphPage + 1}/${pageCount}` : "No invoices";
@@ -527,14 +559,19 @@ const truncate = (text, n) => (String(text).length > n ? `${String(text).slice(0
 
 function focusGraphNode(id) {
   state.selectedNode = id;
+  const selectedNode = state.graph.nodes.find((node) => node.id === id);
   const invoiceNodes = state.graph.nodes.filter((n) => n.type === "Invoice").sort((a, b) =>
     String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id)));
-  let invoiceId = invoiceNodes.some((n) => n.id === id) ? id : null;
-  if (!invoiceId) {
-    const relation = state.graph.edges.find((edge) => edge.source === id || edge.target === id);
-    if (relation) invoiceId = [relation.source, relation.target].find((nodeId) =>
-      invoiceNodes.some((node) => node.id === nodeId)) || null;
+  let invoiceId = selectedNode && selectedNode.type === "Invoice" ? id : null;
+  if (selectedNode && selectedNode.type === "LineItem") {
+    invoiceId = state.graph.edges.find((edge) => edge.type === "CONTAINS" && edge.target === id)?.source || null;
+    state.lineItemsForInvoice = invoiceId;
+    state.showLineItems = Boolean(invoiceId);
+  } else if (!invoiceId) {
+    state.showLineItems = false;
+    state.lineItemsForInvoice = null;
   }
+  if (invoiceId && selectedNode && selectedNode.type === "Invoice") state.lineItemsForInvoice = invoiceId;
   const invoiceIndex = invoiceNodes.findIndex((n) => n.id === invoiceId);
   if (invoiceIndex >= 0) state.graphPage = Math.floor(invoiceIndex / state.graphPageSize);
   renderGraph();
@@ -542,19 +579,69 @@ function focusGraphNode(id) {
 
 function selectNode(id) { focusGraphNode(id); }
 
+function changeGraphPage(delta) {
+  state.graphPage = Math.max(0, state.graphPage + delta);
+  state.selectedNode = null;
+  state.lineItemsForInvoice = null;
+  state.showLineItems = false;
+  renderGraph();
+}
+
 function renderNodeDetail(node, docOf) {
   const props = Object.entries(node.props).filter(([k, v]) => k !== "variants" && k !== "match_key" && v !== null && typeof v !== "object");
   const panel = $("node-detail");
   const documentId = node.type === "Document"
     ? (node.props.document_id || node.id.slice("Document:".length))
     : (node.type === "Invoice" && docOf[node.id] ? docOf[node.id].props.document_id : null);
+  const invoiceItems = node.type === "Invoice" ? state.graph.edges
+    .filter((edge) => edge.type === "CONTAINS" && edge.source === node.id)
+    .sort((a, b) => (a.props.row_index ?? 0) - (b.props.row_index ?? 0))
+    .map((edge) => state.graph.nodes.find((item) => item.id === edge.target)).filter(Boolean) : [];
+  const parties = node.type === "Invoice" ? state.graph.edges.flatMap((edge) => {
+    if (edge.type === "ISSUED" && edge.target === node.id) {
+      const party = state.graph.nodes.find((item) => item.id === edge.source);
+      return party ? [{ relation: "Issued by", party }] : [];
+    }
+    if (edge.type === "BILLED_TO" && edge.source === node.id) {
+      const party = state.graph.nodes.find((item) => item.id === edge.target);
+      return party ? [{ relation: "Billed to", party }] : [];
+    }
+    return [];
+  }) : [];
+  const invoiceConnections = node.type === "Invoice" ? state.graph.edges.filter((edge) =>
+    ["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"].includes(edge.type) &&
+    (edge.source === node.id || edge.target === node.id)) : [];
   fill(panel,
     el("h2", { text: `${node.type}` }),
     el("dl", { class: "props" }, ...props.flatMap(([k, v]) => [el("dt", { text: k.replace(/_/g, " ") }), el("dd", { text: String(v) })])),
+    parties.length ? el("section", { class: "invoice-relations" },
+      el("h2", { text: "Parties and links" }),
+      el("ul", {}, ...parties.map(({ relation, party }) => el("li", {},
+        el("strong", { text: `${relation}: ${party.props.name || "Unknown"}` }),
+        el("span", { text: [party.props.address, party.props.tax_id ? `Tax ID ${party.props.tax_id}` : null].filter(Boolean).join(" · ") || "Party details unavailable" }))))
+    ) : null,
+    invoiceConnections.length ? el("section", { class: "invoice-relations" },
+      el("h2", { text: `Connected invoices (${invoiceConnections.length})` }),
+      el("ul", {}, ...invoiceConnections.map((edge) => {
+        const relatedId = edge.source === node.id ? edge.target : edge.source;
+        const related = state.graph.nodes.find((item) => item.id === relatedId);
+        const title = related ? `Invoice ${related.props.invoice_number || related.id}` : relatedId;
+        return el("li", {}, el("button", { type: "button", class: "quiet", text: title,
+          onclick: () => focusGraphNode(relatedId) }),
+        el("span", { text: `Shared ${edge.props && edge.props.basis || "graph fact"}` }));
+      }))
+    ) : node.type === "Invoice" ? el("p", { class: "empty", text: "No supported link to another invoice yet. A link appears only when invoices share a vendor, customer, or exact item description." }) : null,
     node.props.variants ? el("p", { text: `Spelled ${node.props.variants.length} ways across documents; exact match keys agree.` }) : null,
     el("h2", { text: `Supported by ${node.support.length} document(s)` }),
     el("ul", { class: "support" }, ...node.support.map((s) => el("li", {},
       `${documentName(s.document_id)} v${show(s.version)} `, statusPill(s.review_status)))),
+    invoiceItems.length ? el("section", { class: "invoice-item-detail" },
+      el("h2", { text: `Line items (${invoiceItems.length})` }),
+      el("ul", { class: "invoice-items" }, ...invoiceItems.map((item) => el("li", {},
+        el("strong", { text: `Row ${(item.props.row_index ?? 0) + 1}: ${item.props.description || "(no description)"}` }),
+        el("span", { text: `Qty ${show(item.props.quantity)} | Net ${show(item.props.net_amount)} | Gross ${show(item.props.gross_amount)}` })))),
+      el("button", { type: "button", class: "quiet", text: "Expand these items in the graph",
+        onclick: () => { state.showLineItems = true; state.lineItemsForInvoice = node.id; renderGraph(); } })) : null,
     documentId ? el("button", { type: "button", text: "Open in review", onclick: () => { switchView("review"); selectDocument(documentId); } }) : null,
   );
 }
@@ -651,9 +738,17 @@ function init() {
   $("save").addEventListener("click", () => submitReview("corrected"));
   $("prev-page").addEventListener("click", () => { state.page -= 1; loadPage(); });
   $("next-page").addEventListener("click", () => { state.page += 1; loadPage(); });
-  $("reviewed-only").addEventListener("change", () => { state.graphPage = 0; loadGraph(); });
-  $("graph-prev").addEventListener("click", () => { state.graphPage = Math.max(0, state.graphPage - 1); renderGraph(); });
-  $("graph-next").addEventListener("click", () => { state.graphPage += 1; renderGraph(); });
+  $("reviewed-only").addEventListener("change", () => {
+    state.graphPage = 0; state.selectedNode = null; state.showLineItems = false;
+    state.lineItemsForInvoice = null; loadGraph();
+  });
+  $("show-line-items").addEventListener("change", (event) => {
+    state.showLineItems = event.target.checked;
+    state.lineItemsForInvoice = state.showLineItems ? state.selectedNode : null;
+    renderGraph();
+  });
+  $("graph-prev").addEventListener("click", () => changeGraphPage(-1));
+  $("graph-next").addEventListener("click", () => changeGraphPage(1));
   $("sync-neo4j").addEventListener("click", syncNeo4j);
   $("chat-form").addEventListener("submit", askGraph);
   window.addEventListener("resize", drawBoxes);

@@ -57,6 +57,7 @@
 <main id="view-graph" class="graph" hidden>
   <div class="graph-head">
     <label><input type="checkbox" id="reviewed-only"> Show reviewed support only</label>
+    <label id="item-graph-control"><input type="checkbox" id="show-line-items" disabled> Show line items for selected invoice</label>
     <span id="graph-counts"></span>
     <div class="graph-tools">
       <span id="graph-page-label"></span>
@@ -64,6 +65,13 @@
       <button type="button" id="graph-next" class="quiet" aria-label="Next graph page">Next</button>
       <button type="button" id="sync-neo4j" class="primary">Sync SQLite graph to Neo4j</button>
     </div>
+  </div>
+  <div class="graph-legend" aria-label="Graph legend">
+    <span><i class="legend-node invoice"></i>Invoice</span>
+    <span><i class="legend-edge same_vendor_as"></i>Same vendor</span>
+    <span><i class="legend-edge same_customer_as"></i>Same customer</span>
+    <span><i class="legend-edge same_item_description_as"></i>Exact item-description match</span>
+    <span class="legend-review">Links are built from shared graph records; select an invoice for party and item details below.</span>
   </div>
   <div class="graph-body">
     <section class="graph-explorer" aria-label="Neo4j graph">
@@ -73,7 +81,7 @@
     <aside class="chat-panel" aria-label="Ask the invoice graph">
       <div class="chat-heading"><h2>Ask the graph</h2>
         <p>Answers use facts retrieved from Neo4j and link back to source records.</p></div>
-      <label class="chat-option"><input type="checkbox" id="chat-reviewed-only" checked> Reviewed facts only</label>
+      <label class="chat-option"><input type="checkbox" id="chat-reviewed-only"> Reviewed facts only</label>
       <label class="chat-option"><input type="checkbox" id="chat-use-llm"> Generate answer with hosted LLM</label>
       <div id="chat-messages" class="chat-messages" role="log" aria-live="polite">
         <p class="chat-message assistant">Ask about an invoice number, vendor, customer, or line item.</p>

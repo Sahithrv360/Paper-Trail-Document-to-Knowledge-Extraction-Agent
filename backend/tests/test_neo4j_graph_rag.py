@@ -6,8 +6,8 @@ import unittest
 from unittest import mock
 
 from backend.app.graph_rag import (GRAPH_RAG_REMOTE_PHRASE, GraphAnswerProvider,
-                                   Neo4jRetriever, query_terms)
-from backend.app.neo4j_sync import (export_neo4j_graph, prepare_snapshot,
+                                   Neo4jRetriever, query_terms, summarize_graph_facts)
+from backend.app.neo4j_sync import (derive_invoice_relationships, export_neo4j_graph, prepare_snapshot,
                                     sync_graph_export)
 
 
@@ -106,6 +106,35 @@ class FakeProjectionDriver:
 
 
 class Neo4jSyncTests(unittest.TestCase):
+    def test_shared_facts_create_explainable_invoice_links(self):
+        export = graph_export()
+        support = [{"document_id": "d2", "review_status": "approved"}]
+        export["nodes"].extend([
+            {"id": "Document:d2", "type": "Document", "props": {"filename": "b.jpg"},
+             "support": support},
+            {"id": "Invoice:d2", "type": "Invoice", "props": {"invoice_number": "INV-43"},
+             "support": support},
+            {"id": "LineItem:d2:0", "type": "LineItem",
+             "props": {"description": "  INVOICE   MAPPING BOOK "}, "support": support},
+        ])
+        export["edges"].extend([
+            {"id": "Document:d2-SUPPORTS->Invoice:d2", "type": "SUPPORTS",
+             "source": "Document:d2", "target": "Invoice:d2", "props": {}, "support": support},
+            {"id": "Vendor:v1-ISSUED->Invoice:d2", "type": "ISSUED",
+             "source": "Vendor:v1", "target": "Invoice:d2", "props": {}, "support": support},
+            {"id": "Invoice:d2-CONTAINS->LineItem:d2:0", "type": "CONTAINS",
+             "source": "Invoice:d2", "target": "LineItem:d2:0", "props": {"row_index": 0},
+             "support": support},
+        ])
+        derived = derive_invoice_relationships(export)
+        self.assertEqual({edge["type"] for edge in derived},
+                         {"SAME_VENDOR_AS", "SAME_ITEM_DESCRIPTION_AS"})
+        self.assertEqual({edge["props"]["basis"] for edge in derived},
+                         {"vendor", "item_description"})
+        _, _, edges = prepare_snapshot(export, generation="g1")
+        self.assertEqual(len(edges["SAME_VENDOR_AS"]), 1)
+        self.assertEqual(len(edges["SAME_ITEM_DESCRIPTION_AS"]), 1)
+
     def test_snapshot_validates_directions_and_keeps_nested_data(self):
         generation, nodes, edges = prepare_snapshot(graph_export(), generation="g1")
         line_item = next(row for row in nodes["LineItem"])
@@ -143,6 +172,24 @@ class Neo4jSyncTests(unittest.TestCase):
 
 
 class GraphRagTests(unittest.TestCase):
+    def test_local_summary_answers_from_invoice_and_shared_vendor_facts(self):
+        answer = summarize_graph_facts({"matches": [{
+            "node": {"papertrail_id": "Invoice:d1", "papertrail_type": "Invoice",
+                     "invoice_number": "INV-42", "invoice_date": "2024-01-02",
+                     "total_amount": 100, "currency": "USD"},
+            "links": [{"relationship": "SAME_VENDOR_AS", "other_node": {
+                "papertrail_id": "Invoice:d2", "papertrail_type": "Invoice",
+                "invoice_number": "INV-43"}},
+                {"relationship": "ISSUED", "other_node": {
+                    "papertrail_id": "Vendor:v1", "papertrail_type": "Vendor",
+                    "name": "Acme"}}]}]})
+        self.assertIn("Invoice INV-42", answer)
+        self.assertIn("shares a vendor with Invoice INV-43", answer)
+        self.assertIn("issued by Vendor Acme", answer)
+
+    def test_local_summary_handles_no_matches_without_model(self):
+        self.assertIn("No matching graph facts", summarize_graph_facts({"matches": []}))
+
     def test_terms_drop_stop_words_and_reject_empty_questions(self):
         self.assertEqual(query_terms("Which invoices came from Acme Books?"),
                          ["invoices", "came", "acme", "books"])

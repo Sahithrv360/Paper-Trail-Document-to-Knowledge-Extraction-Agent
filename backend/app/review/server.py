@@ -183,7 +183,7 @@ class ReviewService:
         if self.neo4j_driver is None:
             raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE,
                               "Neo4j is not configured; sync the graph after configuring Neo4j")
-        from ..graph_rag import GraphAnswerProvider, Neo4jRetriever
+        from ..graph_rag import GraphAnswerProvider, Neo4jRetriever, summarize_graph_facts
         retrieved = Neo4jRetriever(self.neo4j_driver, self.neo4j_database).retrieve(
             question, limit=limit, reviewed_only=not include_unreviewed)
         if generate:
@@ -199,11 +199,8 @@ class ReviewService:
                                                    or getattr(provider, "context_truncated", False))
             except RuntimeError as exc:
                 raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
-        elif not retrieved["matches"]:
-            answer = "No matching graph facts were found. Try an invoice number, party name, or item description."
         else:
-            answer = (f"Found {len(retrieved['matches'])} matching graph record(s). "
-                      "Review the cited source records below. Enable hosted answers to get a summary.")
+            answer = summarize_graph_facts(retrieved)
         return {"answer": answer, "sources": retrieved["sources"],
                 "retrieval_count": len(retrieved["matches"]),
                 "context_truncated": bool(retrieved.get("context_truncated")),

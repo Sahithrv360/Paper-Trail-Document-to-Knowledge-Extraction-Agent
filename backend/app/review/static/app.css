@@ -82,11 +82,18 @@ table.grid { width: 100%; border-collapse: collapse; font-size: .88rem; }
 .history { margin-top: 1.25rem; font-size: .88rem; }
 .history li { margin: .2rem 0; }
 
-.graph { padding: 1rem; height: calc(100vh - 3.2rem); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: .75rem; }
+.graph { padding: 1rem; height: calc(100vh - 3.2rem); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: .75rem; }
 .graph-head { display: flex; flex-wrap: wrap; gap: .8rem 1rem; align-items: center; color: var(--ink-soft); }
 .graph-head > #graph-counts { flex: 1; min-width: 15rem; }
 .graph-tools { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; }
 .graph-tools button { white-space: nowrap; }
+.graph-legend { display: flex; flex-wrap: wrap; gap: .35rem 1rem; align-items: center; color: var(--ink-soft); font-size: .8rem; }
+.graph-legend > span { display: inline-flex; align-items: center; gap: .35rem; }
+.legend-node { display: inline-block; width: .8rem; height: .8rem; border: 2px solid var(--pencil); border-radius: 50%; background: #eef3ff; }
+.legend-edge { display: inline-block; width: 1.35rem; border-top: 2px solid var(--pencil); }
+.legend-edge.same_customer_as { border-color: #087e8b; }
+.legend-edge.same_item_description_as { border-color: #8b5fbf; border-top-style: dashed; }
+.legend-review { padding-left: .5rem; border-left: 2px dashed var(--flag); }
 .graph-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 25rem); gap: 1rem; min-height: 0; }
 .graph-explorer { display: grid; grid-template-rows: minmax(15rem, 1fr) minmax(8rem, 13rem); gap: .75rem; min-width: 0; min-height: 0; }
 .graph-canvas { overflow: auto; min-height: 0; background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; }
@@ -110,7 +117,13 @@ svg text { font: 12px var(--ui); fill: var(--ink); }
 svg .col-title { font-weight: 600; fill: var(--ink-soft); }
 svg .edge { stroke: var(--rule); stroke-width: 1.4; fill: none; }
 svg .edge.on { stroke: var(--pencil); stroke-width: 2; }
+svg .edge.same_vendor_as, svg .arrow.same_vendor_as { stroke: var(--pencil); fill: var(--pencil); }
+svg .edge.same_customer_as, svg .arrow.same_customer_as { stroke: #087e8b; fill: #087e8b; }
+svg .edge.same_item_description_as, svg .arrow.same_item_description_as { stroke: #8b5fbf; fill: #8b5fbf; stroke-dasharray: 5 4; }
+svg .edge.contains, svg .arrow.contains { stroke: var(--ink-soft); fill: var(--ink-soft); }
 svg .node rect { fill: var(--sheet); stroke: var(--ink-soft); rx: 6; }
+svg .node.invoice rect { fill: #eef3ff; stroke: var(--pencil); }
+svg .node.lineitem rect { fill: #f6f1fb; stroke: #8b5fbf; }
 svg .node.needs_review rect { stroke: var(--flag); stroke-dasharray: 4 3; }
 svg .node.reviewed rect { stroke: var(--ok); }
 svg .node.on rect { stroke: var(--pencil); stroke-width: 2.5; }
@@ -118,6 +131,10 @@ svg .node { cursor: pointer; }
 svg .node:focus-visible rect { stroke: var(--pencil); stroke-width: 3; }
 .support { list-style: none; padding: 0; }
 .support li { padding: .2rem 0; border-bottom: 1px solid var(--rule); }
+.invoice-relations, .invoice-item-detail { margin-top: 1rem; padding-top: .75rem; border-top: 1px solid var(--rule); }
+.invoice-relations ul, .invoice-items { margin: .35rem 0; padding-left: 1.2rem; }
+.invoice-relations li, .invoice-items li { margin: .35rem 0; }
+.invoice-relations li span, .invoice-items li span { display: block; color: var(--ink-soft); font-size: .82rem; }
 dl.props { display: grid; grid-template-columns: max-content 1fr; gap: .2rem .7rem; }
 dl.props dt { color: var(--ink-soft); }
 dl.props dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }

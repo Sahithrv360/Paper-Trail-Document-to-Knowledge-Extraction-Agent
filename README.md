@@ -174,7 +174,9 @@ The review server binds to `127.0.0.1`; keep its one-time link private. Copy `.e
 
 ### Neo4j graph view and Graph RAG
 
-SQLite remains the source of truth. To project the current graph into the local Neo4j instance, install the optional driver, set `NEO4J_URI`, `NEO4J_USERNAME`, and `NEO4J_PASSWORD` in `.env`, then run:
+SQLite remains the source of truth. Neo4j receives a rebuildable graph projection. The sync also creates direct `SAME_VENDOR_AS`, `SAME_CUSTOMER_AS`, and `SAME_ITEM_DESCRIPTION_AS` invoice links when two invoices share a party node or an exact normalized item description. These links identify the shared basis; an item-description match does not claim the products are identical. No SQLite migration is needed: rerun sync after importing or reviewing invoices.
+
+For the local Docker database, check that the container is running and its ports are published (`7474` for Browser and `7687` for Bolt). If `.env` does not exist, copy `.env.example` to `.env`; then set `NEO4J_URI=bolt://127.0.0.1:7687`, `NEO4J_USERNAME=neo4j`, and `NEO4J_PASSWORD` to the password you set for the local container. Keep `.env` private. Install the optional driver and import the SQLite graph:
 
 ```powershell
 python -m pip install -r backend/requirements-neo4j.txt
@@ -182,6 +184,8 @@ python -m backend.app.neo4j_sync
 ```
 
 The sync is repeatable and imports only the application's known node and relationship types. Add `--reviewed-only` to project only approved/corrected facts. Open Neo4j Browser at `http://localhost:7474` and try `MATCH (n:PaperTrail) RETURN n LIMIT 100`.
+
+To inspect invoice-to-invoice links in Neo4j Browser, run `MATCH (a:PaperTrail:Invoice)-[r]->(b:PaperTrail:Invoice) RETURN a,r,b`. To rebuild after new extractions, reviews, or corrections, run `python -m backend.app.neo4j_sync` again. In the Paper Trail Graph view, use **Sync SQLite graph to Neo4j** after starting the review server; select an invoice to see its vendor, customer, line items, support, and shared-fact links below the overview.
 
 Start the combined graph and chat review UI with:
 

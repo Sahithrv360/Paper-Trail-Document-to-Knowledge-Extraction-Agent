@@ -23,6 +23,10 @@ EDGE_TYPES = {
     "ISSUED": ("Vendor", "Invoice"),
     "BILLED_TO": ("Invoice", "Customer"),
     "CONTAINS": ("Invoice", "LineItem"),
+    # Derived only in the Neo4j projection from shared, exact graph facts.
+    "SAME_VENDOR_AS": ("Invoice", "Invoice"),
+    "SAME_CUSTOMER_AS": ("Invoice", "Invoice"),
+    "SAME_ITEM_DESCRIPTION_AS": ("Invoice", "Invoice"),
     # Defined for a later, evidence-backed classifier; the builder never emits it.
     "CLASSIFIED_AS": ("LineItem", "ProductCategory"),
 }

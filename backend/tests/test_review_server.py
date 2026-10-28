@@ -82,6 +82,9 @@ class ReviewServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"Ask the graph", data)
         self.assertIn(b"Sync SQLite graph to Neo4j", data)
+        self.assertIn(b"Same vendor", data)
+        self.assertIn(b"Exact item-description match", data)
+        self.assertIn(b"Show line items for selected invoice", data)
         self.assertEqual(self.request("GET", "/app.css", token=None)[0], 200)
 
     def test_graph_rag_and_neo4j_routes_require_configuration_and_auth(self):

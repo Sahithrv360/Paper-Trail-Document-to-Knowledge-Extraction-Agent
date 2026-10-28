@@ -5,14 +5,68 @@ Neo4j data from a full snapshot and uses the stable IDs from ``GraphStore.export
 """
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import uuid
 from collections import defaultdict
 
 from .config import GRAPH_PATH
 from .graph import GraphStore
 from .graph_ontology import EDGE_TYPES, NODE_TYPES
+
+
+def derive_invoice_relationships(export):
+    """Derive explainable invoice links from shared entities in a graph snapshot.
+
+    These projection edges do not alter the SQLite claim ledger. Item relationships
+    use exact case/whitespace-folded descriptions and make no product-identity claim.
+    """
+    nodes = {node["id"]: node for node in export["nodes"]}
+    groups = defaultdict(lambda: defaultdict(list))
+    for edge in export["edges"]:
+        if edge["type"] == "ISSUED":
+            groups["SAME_VENDOR_AS"][edge["source"]].append(edge["target"])
+        elif edge["type"] == "BILLED_TO":
+            groups["SAME_CUSTOMER_AS"][edge["target"]].append(edge["source"])
+
+    links = defaultdict(set)
+    for relation, entities in groups.items():
+        for entity_id, invoice_ids in entities.items():
+            unique = sorted(set(invoice_ids))
+            for index, left in enumerate(unique):
+                for right in unique[index + 1:]:
+                    links[(left, right, relation)].add(entity_id)
+
+    item_groups = defaultdict(lambda: defaultdict(set))
+    for edge in export["edges"]:
+        if edge["type"] != "CONTAINS":
+            continue
+        props = (nodes.get(edge["target"]) or {}).get("props") or {}
+        description = props.get("description")
+        if isinstance(description, str) and description.strip():
+            key = re.sub(r"\s+", " ", description).strip().casefold()
+            item_groups[key][edge["source"]].add(edge["target"])
+    for description_key, invoices in item_groups.items():
+        invoice_ids = sorted(invoices)
+        for index, left in enumerate(invoice_ids):
+            for right in invoice_ids[index + 1:]:
+                description_id = hashlib.sha256(description_key.encode("utf-8")).hexdigest()[:16]
+                links[(left, right, "SAME_ITEM_DESCRIPTION_AS")].add(description_id)
+
+    derived = []
+    for (left, right, relation), entity_ids in sorted(links.items()):
+        for entity_id in sorted(entity_ids):
+            derived.append({
+                "id": f"{left}-{relation}->{right}:{entity_id}", "type": relation,
+                "source": left, "target": right,
+                "props": {"basis": relation.removeprefix("SAME_").removesuffix("_AS").lower(),
+                          "shared_entity_id": entity_id},
+                "support": list(nodes[left].get("support", [])) +
+                           list(nodes[right].get("support", [])),
+            })
+    return derived
 
 
 class Neo4jConfigurationError(RuntimeError):
@@ -71,7 +125,7 @@ def prepare_snapshot(export, generation=None):
         by_type[node_type].append({"id": node_id, "properties": properties})
 
     edges_by_type = defaultdict(list)
-    for edge in edges:
+    for edge in [*edges, *derive_invoice_relationships(export)]:
         edge_type = edge.get("type")
         source, target = edge.get("source"), edge.get("target")
         if edge_type not in EDGE_TYPES or source not in ids or target not in ids:
