@@ -20,12 +20,15 @@ Security model (single local user):
 """
 
 import argparse
+import hashlib
 import hmac
 import json
 import mimetypes
+import os
 import secrets
 import threading
-from collections import OrderedDict
+import time
+from collections import OrderedDict, deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -62,6 +65,13 @@ class ReviewService:
         self.answer_provider_factory = answer_provider_factory
         self._page_cache = OrderedDict()
         self._cache_lock = threading.Lock()
+        try:
+            self._graph_llm_limit = max(0, int(os.getenv("GRAPH_RAG_MAX_CALLS_PER_HOUR", "10")))
+        except ValueError:
+            self._graph_llm_limit = 10
+        self._graph_llm_calls = deque()
+        self._graph_answer_cache = OrderedDict()
+        self._graph_llm_lock = threading.Lock()
 
     # -- reads -----------------------------------------------------------------------
 
@@ -194,25 +204,85 @@ class ReviewService:
         from ..graph_rag import GraphAnswerProvider, Neo4jRetriever, summarize_graph_facts
         retrieved = Neo4jRetriever(self.neo4j_driver, self.neo4j_database).retrieve(
             question, limit=limit, reviewed_only=not include_unreviewed)
-        if generate:
-            settings = self.settings
-            if settings is None:
-                from ..config import Settings
-                settings = Settings.from_env()
-            try:
-                factory = self.answer_provider_factory or GraphAnswerProvider
-                provider = factory(settings)
-                answer = provider.answer(question, retrieved)
-                retrieved["context_truncated"] = (retrieved.get("context_truncated", False)
-                                                   or getattr(provider, "context_truncated", False))
-            except RuntimeError as exc:
-                raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
+        answer_cached = False
+        budget_fallback = False
+        if generate and retrieved.get("matches"):
+            cache_matches = []
+            for match in retrieved["matches"]:
+                canonical = dict(match)
+                canonical["links"] = sorted(match.get("links") or [],
+                                             key=lambda link: link.get("relationship_id") or "")
+                cache_matches.append(canonical)
+            cache_payload = json.dumps({"question": " ".join(question.split()).casefold(),
+                                        "matches": cache_matches,
+                                        "sources": retrieved["sources"]},
+                                       sort_keys=True, ensure_ascii=False, default=str)
+            cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
+            with self._graph_llm_lock:
+                answer = self._graph_answer_cache.get(cache_key)
+                if answer is not None:
+                    self._graph_answer_cache.move_to_end(cache_key)
+                    answer_cached = True
+            if answer is None:
+                now = time.monotonic()
+                with self._graph_llm_lock:
+                    while self._graph_llm_calls and now - self._graph_llm_calls[0] >= 3600:
+                        self._graph_llm_calls.popleft()
+                    budget_exhausted = (self._graph_llm_limit == 0 or
+                                        len(self._graph_llm_calls) >= self._graph_llm_limit)
+                if budget_exhausted:
+                    answer = summarize_graph_facts(retrieved)
+                    budget_fallback = True
+                else:
+                    settings = self.settings
+                    if settings is None:
+                        from ..config import Settings
+                        settings = Settings.from_env()
+                    try:
+                        factory = self.answer_provider_factory or GraphAnswerProvider
+                        provider = factory(settings)
+                    except RuntimeError as exc:
+                        raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
+                    with self._graph_llm_lock:
+                        now = time.monotonic()
+                        while self._graph_llm_calls and now - self._graph_llm_calls[0] >= 3600:
+                            self._graph_llm_calls.popleft()
+                        if self._graph_llm_limit == 0 or len(self._graph_llm_calls) >= self._graph_llm_limit:
+                            budget_exhausted = True
+                        else:
+                            self._graph_llm_calls.append(now)
+                    if budget_exhausted:
+                        answer = summarize_graph_facts(retrieved)
+                        budget_fallback = True
+                    else:
+                        try:
+                            answer = provider.answer(question, retrieved)
+                        except RuntimeError as exc:
+                            raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
+                        with self._graph_llm_lock:
+                            self._graph_answer_cache[cache_key] = answer
+                            self._graph_answer_cache.move_to_end(cache_key)
+                            while len(self._graph_answer_cache) > 64:
+                                self._graph_answer_cache.popitem(last=False)
+                        retrieved["context_truncated"] = (retrieved.get("context_truncated", False)
+                                                           or getattr(provider, "context_truncated", False))
         else:
             answer = summarize_graph_facts(retrieved)
+        with self._graph_llm_lock:
+            now = time.monotonic()
+            while self._graph_llm_calls and now - self._graph_llm_calls[0] >= 3600:
+                self._graph_llm_calls.popleft()
+            calls_used = len(self._graph_llm_calls)
+            calls_remaining = max(0, self._graph_llm_limit - calls_used)
         return {"answer": answer, "sources": retrieved["sources"],
                 "retrieval_count": len(retrieved["matches"]),
                 "context_truncated": bool(retrieved.get("context_truncated")),
-                "reviewed_only": retrieved["reviewed_only"]}
+                "reviewed_only": retrieved["reviewed_only"],
+                "answer_mode": "hosted_cached" if answer_cached else
+                    "local_budget_fallback" if budget_fallback else
+                    "hosted" if generate and retrieved.get("matches") else "local",
+                "llm_calls_used": calls_used, "llm_calls_remaining": calls_remaining,
+                "llm_call_limit": self._graph_llm_limit}
 
     # -- writes ----------------------------------------------------------------------
 

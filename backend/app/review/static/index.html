@@ -68,7 +68,9 @@
       <label><input type="checkbox" id="filter-customers" checked> Customers</label>
     </fieldset>
     <div class="graph-actions">
+      <label class="graph-option graph-overview-option"><input type="checkbox" id="full-network" checked> Full invoice network</label>
       <label class="graph-option"><input type="checkbox" id="show-direct-links"> Direct links</label>
+      <label class="graph-option"><input type="checkbox" id="graph-3d"> 3D perspective</label>
       <label class="graph-option"><input type="checkbox" id="reviewed-only"> Reviewed only</label>
       <div class="zoom-tools" aria-label="Graph zoom controls">
         <button type="button" id="zoom-out" class="quiet" aria-label="Zoom out">−</button>
@@ -88,10 +90,16 @@
   </div>
   <div class="graph-legend" aria-label="Graph legend">
     <span><i class="legend-node invoice"></i>Invoice</span>
-    <span><i class="legend-node shared-hub"></i>Shared fact hub</span>
-    <span><i class="legend-edge shared_itemdescription"></i>Shared item description</span>
-    <span><i class="legend-edge direct-link"></i>Direct invoice relationship</span>
-    <span class="legend-review">Drag the background to pan · scroll to zoom · select a node to inspect its neighborhood.</span>
+    <span><i class="legend-node vendor"></i>Vendor</span>
+    <span><i class="legend-node customer"></i>Customer</span>
+    <span><i class="legend-node shared-hub"></i>Shared item</span>
+    <span><i class="legend-edge shared_itemdescription"></i>Shared item path</span>
+    <span><i class="legend-edge shared_vendor"></i>Shared vendor path</span>
+    <span><i class="legend-edge shared_customer"></i>Shared customer path</span>
+    <span><i class="legend-edge direct-vendor"></i>Same vendor shortcut</span>
+    <span><i class="legend-edge direct-customer"></i>Same customer shortcut</span>
+    <span><i class="legend-edge direct-item"></i>Same item shortcut</span>
+    <span id="graph-gesture-help" class="legend-review">Drag the background to pan · scroll to zoom · select a node to inspect its neighborhood.</span>
   </div>
   <div class="graph-body">
     <section class="graph-explorer" aria-label="Invoice relationship graph">
@@ -102,7 +110,7 @@
       <div class="chat-heading"><h2>Ask the graph</h2>
         <p>Answers use Neo4j facts and link back to source invoices.</p></div>
       <div class="chat-options"><label class="chat-option"><input type="checkbox" id="chat-reviewed-only"> Reviewed facts only</label>
-      <label class="chat-option"><input type="checkbox" id="chat-use-llm"> Hosted answer generation</label></div>
+      <label class="chat-option"><input type="checkbox" id="chat-use-llm"> Use hosted AI (limited)</label></div>
       <div class="chat-suggestions" aria-label="Suggested questions">
         <button type="button" data-question="Which invoices share an item description?">Shared items</button>
         <button type="button" data-question="Why is invoice 62517865 connected?">Explain a link</button>
@@ -116,6 +124,7 @@
         <button type="submit" class="primary">Ask</button>
       </form>
       <p class="chat-privacy">Hosted generation sends only retrieved graph facts when explicitly enabled and configured.</p>
+      <p id="chat-call-status" class="chat-call-status">Hosted answer budget: up to 10 calls per hour; repeated questions reuse cached answers.</p>
     </aside>
   </div>
   <div id="suggestions"></div>

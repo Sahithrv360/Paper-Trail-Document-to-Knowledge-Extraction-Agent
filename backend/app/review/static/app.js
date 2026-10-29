@@ -7,6 +7,9 @@ const state = {
   docSearch: "",
   graphSource: "Neo4j",
   graphZoom: 1, graphPanX: 0, graphPanY: 0, graphDrag: null,
+  graphRotationX: -.18, graphRotationY: .35, graph3d: false,
+  graphBaseLayout: null, graphLayoutNodes: null, graphLayoutEdges: null, graphLayoutSignature: "",
+  graphViewWidth: 1400, graphViewHeight: 820,
 };
 
 const HEADER_FIELDS = [
@@ -322,10 +325,10 @@ function renderFields(record) {
     ...(editable ? [el("th", { colspan: "2", text: "Corrected value (as printed)" })]
       : [el("th", { text: "As read" }), el("th", { text: "Parsed" })]), el("th", { text: "Evidence" })));
   const body = el("tbody");
-  body.append(el("tr", { class: "group" }, el("td", { colspan: "4", text: "Invoice" })));
+  body.append(el("tr", { class: "group invoice-group" }, el("td", { colspan: "4", text: "Invoice" })));
   HEADER_FIELDS.forEach(([key, label]) => body.append(fieldRow(key, label, record, editable)));
   for (const [role, fields] of Object.entries(PARTY_FIELDS)) {
-    body.append(el("tr", { class: "group" }, el("td", { colspan: "4", text: role === "vendor" ? "Vendor (issued the invoice)" : "Customer (billed)" })));
+    body.append(el("tr", { class: `group ${role}-group` }, el("td", { colspan: "4", text: role === "vendor" ? "Vendor (issued the invoice)" : "Customer (billed)" })));
     fields.forEach(([key, label]) => body.append(fieldRow(`${role}.${key}`, label, record, editable)));
   }
   const nodes = [el("table", { class: "grid" }, head, body)];
@@ -333,7 +336,7 @@ function renderFields(record) {
     nodes.push(itemsEditor(record));
   } else {
     (record.items || []).forEach((item, index) => {
-      body.append(el("tr", { class: "group" }, el("td", { colspan: "4", text: `Line ${index + 1}${item.page ? ` (page ${item.page})` : ""}` })));
+      body.append(el("tr", { class: "group line-group" }, el("td", { colspan: "4", text: `Line ${index + 1}${item.page ? ` (page ${item.page})` : ""}` })));
       ITEM_FIELDS.forEach(([key, label]) => body.append(fieldRow(`items[${index}].${key}`, label, record, false)));
     });
     if (!(record.items || []).length) body.append(el("tr", {}, el("td", { colspan: "4", class: "empty", text: "No line items were read." })));
@@ -514,19 +517,56 @@ function graphHasInvoiceLinks(graph) {
   return [...invoiceHubIndex(graph).hubInvoices.values()].some((invoiceIds) => invoiceIds.size > 1);
 }
 
+function invoiceOverviewEdges(graph, invoiceNodes, hubInvoices, nodes) {
+  const invoiceIds = new Set(invoiceNodes.map((node) => node.id));
+  const types = new Set(["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"]);
+  const direct = (graph.edges || []).filter((edge) => types.has(edge.type) &&
+    invoiceIds.has(edge.source) && invoiceIds.has(edge.target));
+  if (direct.length) return direct;
+  const hubTypes = { Vendor: "SAME_VENDOR_AS", Customer: "SAME_CUSTOMER_AS", ItemDescription: "SAME_ITEM_DESCRIPTION_AS" };
+  const derived = [];
+  for (const [hubId, linkedInvoices] of hubInvoices) {
+    const hub = nodes[hubId], type = hubTypes[hub?.type];
+    if (!type) continue;
+    const ids = [...linkedInvoices].sort();
+    for (let i = 0; i < ids.length; i += 1) for (let j = i + 1; j < ids.length; j += 1) {
+      const shared = hub.props.normalized_description || hub.props.name || "shared fact";
+      derived.push({ source: ids[i], target: ids[j], type,
+        props: type === "SAME_ITEM_DESCRIPTION_AS"
+          ? { shared_description: shared } : { shared_name: shared } });
+    }
+  }
+  return derived;
+}
+
+function overviewLayout(nodes, width, height) {
+  const cellWidth = 180, cellHeight = 82;
+  const columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length * (height / width) * (cellWidth / cellHeight))));
+  const rows = Math.max(1, Math.ceil(nodes.length / columns));
+  const viewWidth = columns * cellWidth + 60, viewHeight = rows * cellHeight + 60;
+  const positions = Object.fromEntries(nodes.map((node, index) => {
+    const column = index % columns, row = Math.floor(index / columns);
+    return [node.id, { id: node.id, type: node.type,
+      x: 30 + column * cellWidth + cellWidth / 2,
+      y: 30 + row * cellHeight + cellHeight / 2, z: 0 }];
+  }));
+  return { positions, width: viewWidth, height: viewHeight };
+}
+
 function renderGraph() {
   const graph = state.graph;
   if (!graph) return;
   const { nodes, invoiceHubs, hubInvoices } = invoiceHubIndex(graph);
   const invoiceNodes = graph.nodes.filter((n) => n.type === "Invoice").sort((a, b) =>
     String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id)));
+  const fullNetwork = $("full-network").checked;
   const pageCount = Math.max(1, Math.ceil(invoiceNodes.length / state.graphPageSize));
   state.graphPage = Math.min(state.graphPage, pageCount - 1);
   const pageInvoices = invoiceNodes.slice(state.graphPage * state.graphPageSize,
     (state.graphPage + 1) * state.graphPageSize);
   const selected = state.selectedNode;
   const selectedNode = nodes[selected];
-  const showingConnections = ["Invoice", "ItemDescription", "Vendor", "Customer"].includes(selectedNode?.type);
+  const showingConnections = !fullNetwork && ["Invoice", "ItemDescription", "Vendor", "Customer"].includes(selectedNode?.type);
   let selectedHubs = new Set();
   if (selectedNode?.type === "Invoice") selectedHubs = invoiceHubs.get(selected) || new Set();
   else if (["ItemDescription", "Vendor", "Customer"].includes(selectedNode?.type)) selectedHubs = new Set([selected]);
@@ -537,7 +577,7 @@ function renderGraph() {
       (type === "Customer" && $("filter-customers").checked);
   }));
 
-  let visibleInvoiceIds = new Set(pageInvoices.map((n) => n.id));
+  let visibleInvoiceIds = new Set((fullNetwork ? invoiceNodes : pageInvoices).map((n) => n.id));
   if (showingConnections) {
     visibleInvoiceIds = new Set([selectedNode.type === "Invoice" ? selected : null].filter(Boolean));
     for (const hubId of selectedHubs) {
@@ -549,12 +589,12 @@ function renderGraph() {
   const invoiceCandidates = invoiceNodes.filter((n) => visibleInvoiceIds.has(n.id));
   const selectedInvoiceFirst = selectedNode?.type === "Invoice"
     ? invoiceCandidates.find((n) => n.id === selected) : null;
-  const visibleInvoices = selectedInvoiceFirst
+  const visibleInvoices = fullNetwork ? invoiceCandidates : selectedInvoiceFirst
     ? [selectedInvoiceFirst, ...invoiceCandidates.filter((n) => n.id !== selected).slice(0, MAX_INVOICES - 1)]
     : invoiceCandidates.slice(0, MAX_INVOICES);
   const invoiceIds = new Set(visibleInvoices.map((n) => n.id));
   const visibleHubIds = new Set();
-  if (selectedHubs.size) {
+  if (!fullNetwork && selectedHubs.size) {
     for (const hubId of selectedHubs) {
       if ([...(hubInvoices.get(hubId) || [])].filter((id) => invoiceIds.has(id)).length > 1) {
         visibleHubIds.add(hubId);
@@ -573,10 +613,13 @@ function renderGraph() {
   const directTypeAllowed = (type) => (type === "SAME_ITEM_DESCRIPTION_AS" && $("filter-items").checked) ||
     (type === "SAME_VENDOR_AS" && $("filter-vendors").checked) ||
     (type === "SAME_CUSTOMER_AS" && $("filter-customers").checked);
-  const directEdges = $("show-direct-links").checked
-    ? graph.edges.filter((e) => directTypes.has(e.type) && directTypeAllowed(e.type) && invoiceIds.has(e.source) && invoiceIds.has(e.target))
-    : [];
-  edges.push(...directEdges.slice(0, 160));
+  const allInvoiceEdges = fullNetwork ? invoiceOverviewEdges(graph, invoiceNodes, hubInvoices, nodes) : [];
+  const directEdges = fullNetwork
+    ? allInvoiceEdges.filter((e) => directTypeAllowed(e.type))
+    : $("show-direct-links").checked
+      ? graph.edges.filter((e) => directTypes.has(e.type) && directTypeAllowed(e.type) && invoiceIds.has(e.source) && invoiceIds.has(e.target))
+      : [];
+  edges.push(...(fullNetwork ? directEdges : directEdges.slice(0, 160)));
   const itemCount = {};
   graph.edges.filter((e) => e.type === "CONTAINS").forEach((e) => { itemCount[e.source] = (itemCount[e.source] || 0) + 1; });
   const docOf = {};
@@ -589,14 +632,26 @@ function renderGraph() {
     return [n.props.name || n.id, `${n.type}  ·  ${hubInvoices.get(n.id)?.size || 0} invoices`];
   };
   const viewNodes = [...visibleInvoices, ...visibleHubs];
-  const viewWidth = 1400, viewHeight = 820;
-  const position = forceLayout(viewNodes, edges, nodes, selected, viewWidth, viewHeight);
+  const overview = fullNetwork ? overviewLayout(viewNodes, 1400, 820) : null;
+  const viewWidth = overview?.width || 1400, viewHeight = overview?.height || 820;
+  state.graphViewWidth = viewWidth; state.graphViewHeight = viewHeight;
+  const layoutSignature = JSON.stringify([fullNetwork ? "overview" : selected, viewNodes.map((node) => node.id),
+    edges.map((edge) => [edge.source, edge.target, edge.type])]);
+  const layout = fullNetwork ? overview.positions : layoutSignature === state.graphLayoutSignature && state.graphBaseLayout
+    ? state.graphBaseLayout : forceLayout(viewNodes, edges, nodes, selected, viewWidth, viewHeight);
+  state.graphLayoutSignature = layoutSignature;
+  state.graphBaseLayout = layout;
+  state.graphLayoutNodes = viewNodes;
+  state.graphLayoutEdges = edges.filter((edge) => layout[edge.source] && layout[edge.target]);
+  const position = state.graph3d && !fullNetwork ? projectGraph3d(layout, viewWidth, viewHeight) : layout;
   const root = $("graph-svg");
   root.setAttribute("viewBox", `0 0 ${viewWidth} ${viewHeight}`);
   root.setAttribute("preserveAspectRatio", "xMidYMid meet");
-  root.setAttribute("width", "100%");
-  root.setAttribute("height", "100%");
-  const visibleEdges = edges.filter((e) => position[e.source] && position[e.target]);
+  root.setAttribute("width", String(viewWidth));
+  root.setAttribute("height", String(viewHeight));
+  root.style.width = fullNetwork ? `${viewWidth}px` : "100%";
+  root.style.height = fullNetwork ? `${viewHeight}px` : "100%";
+  const visibleEdges = state.graphLayoutEdges;
   const relationTypes = ["SHARED_VENDOR", "SHARED_CUSTOMER", "SHARED_ITEMDESCRIPTION",
     "SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"];
   const children = [
@@ -604,37 +659,74 @@ function renderGraph() {
       id: `arrow-${type}`, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6",
       markerHeight: "6", orient: "auto-start-reverse",
     }, svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: `arrow ${type.toLowerCase()}` })))),
-    ...visibleEdges.map((e) => {
+    ...visibleEdges.map((e, edgeIndex) => {
       const a = position[e.source], b = position[e.target];
       const dx = b.x - a.x, dy = b.y - a.y, distance = Math.max(1, Math.hypot(dx, dy));
       const nx = -dy / distance, ny = dx / distance;
-      const bend = e.type.startsWith("SAME_") ? 22 : 0;
+      const bend = e.type === "SAME_VENDOR_AS" ? 30 : e.type === "SAME_CUSTOMER_AS" ? -30
+        : e.type === "SAME_ITEM_DESCRIPTION_AS" ? 44 : 0;
       const cx = (a.x + b.x) / 2 + nx * bend, cy = (a.y + b.y) / 2 + ny * bend;
       const on = selected && (e.source === selected || e.target === selected);
       const relation = e.type.toLowerCase();
+      const endpoint = (id) => {
+        const node = nodes[id];
+        return node?.type === "Invoice" ? `Invoice ${node.props.invoice_number || id}`
+          : node?.props?.name || node?.props?.normalized_description || node?.type || id;
+      };
+      const fromNumber = endpoint(e.source), toNumber = endpoint(e.target);
+      const shared = e.props?.shared_description || e.props?.shared_name || e.props?.name;
+      const reason = e.type === "SAME_VENDOR_AS" ? "same vendor"
+        : e.type === "SAME_CUSTOMER_AS" ? "same customer"
+          : e.type === "SAME_ITEM_DESCRIPTION_AS" ? "same item description"
+            : e.type.replace(/_/g, " ").toLowerCase();
       return svg("path", { class: `edge ${relation}${on ? " on" : ""}`,
-        "marker-end": `url(#arrow-${e.type})`,
+        "aria-label": `${fromNumber} linked to ${toNumber} by ${reason}${shared ? `: ${shared}` : ""}`,
+        title: `${fromNumber} linked to ${toNumber} by ${reason}${shared ? `: ${shared}` : ""}`,
+        "data-graph-edge": edgeIndex,
+        ...(!e.type.startsWith("SAME_") ? { "marker-end": `url(#arrow-${e.type})` } : {}),
+        opacity: state.graph3d ? Math.max(.38, Math.min(1, ((a.scale || 1) + (b.scale || 1)) / 2)) : null,
         d: `M${a.x},${a.y} Q${cx},${cy} ${b.x},${b.y}` },
       svg("title", { text: `${e.type.replace(/_/g, " ").toLowerCase()}${e.props?.shared_description ? ` · ${e.props.shared_description}` : ""}` }));
     }),
-    ...viewNodes.map((n) => {
+    ...viewNodes.slice().sort((a, b) => (position[a.id].depth || 0) - (position[b.id].depth || 0)).map((n) => {
       const p = position[n.id]; const [line1, line2] = label(n);
-      const width = n.type === "Invoice" ? 224 : 205;
-      const height = n.type === "Invoice" ? 68 : 62;
+      const width = n.type === "Invoice" ? (fullNetwork ? 160 : 224) : 205;
+      const height = n.type === "Invoice" ? (fullNetwork ? 50 : 68) : 62;
+      const shape = n.type === "Invoice"
+        ? svg("rect", { width, height, rx: 10 })
+        : n.type === "ItemDescription"
+          ? svg("polygon", { points: `18,0 ${width - 18},0 ${width},${height / 2} ${width - 18},${height} 18,${height} 0,${height / 2}` })
+          : n.type === "Vendor"
+            ? svg("polygon", { points: `12,0 ${width - 12},0 ${width},${height / 2} ${width - 12},${height} 12,${height} 0,${height / 2}` })
+            : svg("ellipse", { cx: width / 2, cy: height / 2, rx: width / 2, ry: height / 2 });
       return svg("g", {
         class: `node ${n.type.toLowerCase()} ${nodeStatus(n)}${selected === n.id ? " selected" : ""}`,
-        transform: `translate(${p.x - width / 2},${p.y - height / 2})`,
+        "data-graph-node": n.id,
+        transform: `translate(${p.x} ${p.y}) scale(${p.scale || 1}) translate(${-width / 2} ${-height / 2})`,
+        opacity: state.graph3d ? Math.max(.62, Math.min(1, .72 + (p.scale || 1) * .28)) : 1,
         tabindex: "0", role: "button", "aria-label": `${n.type} ${line1}`,
         onclick: () => selectNode(n.id), onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(n.id); } },
       }, svg("title", { text: `${line1} · ${line2}` }),
-      svg("rect", { width, height, rx: n.type === "ItemDescription" ? 15 : 10 }),
-      svg("text", { x: 12, y: 25, class: "node-title", text: truncate(line1, n.type === "Invoice" ? 24 : 28) }),
-      svg("text", { x: 12, y: 47, class: "node-subtitle", text: truncate(line2, 30) }));
+      shape,
+      svg("text", { x: 10, y: fullNetwork ? 20 : 25, class: "node-title", text: truncate(line1, n.type === "Invoice" ? 24 : 28) }),
+      svg("text", { x: 10, y: fullNetwork ? 38 : 47, class: "node-subtitle", text: truncate(line2, 30) }));
     }),
   ];
   fill(root, svg("g", { id: "graph-content", transform: graphTransform() }, ...children));
   const directCount = directEdges.length;
-  $("graph-counts").textContent = showingConnections
+  $("show-direct-links").closest("label").hidden = fullNetwork;
+  $("graph-3d").closest("label").hidden = fullNetwork;
+  if (fullNetwork) { state.graph3d = false; $("graph-3d").checked = false; }
+  const gestureHelp = $("graph-gesture-help");
+  if (gestureHelp) gestureHelp.textContent = fullNetwork
+    ? "Full network: scroll to explore every invoice number; line colors show shared vendor, customer, or item links. Select an invoice for details, or turn this off to see shared entity nodes."
+    : state.graph3d
+      ? "Drag the background to orbit · scroll to zoom · select a node to inspect its neighborhood."
+      : "Drag the background to pan · scroll to zoom · select a node to inspect its neighborhood.";
+  $("graph-page-label").parentElement.hidden = fullNetwork;
+  $("graph-counts").textContent = fullNetwork
+    ? `${state.graphSource} · all ${visibleInvoices.length} invoices · ${directCount} invoice relation paths`
+    : showingConnections
     ? `${state.graphSource} · ${visibleInvoices.length}${allConnectedInvoiceCount > visibleInvoices.length ? ` of ${allConnectedInvoiceCount}` : ""} invoices · ${visibleHubs.length} shared hubs${$("show-direct-links").checked ? ` · ${directCount} direct links${directEdges.length > 160 ? " (first 160 shown)" : ""}` : ""}`
     : `${state.graphSource} · showing ${visibleInvoices.length} invoices from this page`;
   const sharedHubCount = [...hubInvoices.values()].filter((ids) => ids.size > 1).length;
@@ -661,26 +753,64 @@ function setGraphZoom(value) {
 function setupGraphInteractions() {
   const canvas = $("graph-svg");
   canvas.addEventListener("wheel", (event) => {
+    if ($("full-network").checked) return;
     event.preventDefault();
     setGraphZoom(state.graphZoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
   }, { passive: false });
   canvas.addEventListener("pointerdown", (event) => {
     if (event.target !== canvas) return;
     state.graphDrag = { x: event.clientX, y: event.clientY,
-      panX: state.graphPanX, panY: state.graphPanY };
+      panX: state.graphPanX, panY: state.graphPanY,
+      rotationX: state.graphRotationX, rotationY: state.graphRotationY };
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener("pointermove", (event) => {
     if (!state.graphDrag) return;
     const box = canvas.getBoundingClientRect();
-    state.graphPanX = state.graphDrag.panX + (event.clientX - state.graphDrag.x) * 1400 / Math.max(1, box.width);
-    state.graphPanY = state.graphDrag.panY + (event.clientY - state.graphDrag.y) * 820 / Math.max(1, box.height);
-    const content = $("graph-content");
-    if (content) content.setAttribute("transform", graphTransform());
+    const dx = event.clientX - state.graphDrag.x, dy = event.clientY - state.graphDrag.y;
+    if (state.graph3d) {
+      state.graphRotationY = state.graphDrag.rotationY + dx * .008;
+      state.graphRotationX = Math.max(-1.15, Math.min(1.15, state.graphDrag.rotationX + dy * .008));
+      updateGraphProjection();
+    } else {
+      state.graphPanX = state.graphDrag.panX + dx * state.graphViewWidth / Math.max(1, box.width);
+      state.graphPanY = state.graphDrag.panY + dy * state.graphViewHeight / Math.max(1, box.height);
+      const content = $("graph-content");
+      if (content) content.setAttribute("transform", graphTransform());
+    }
   });
   const stopDrag = () => { state.graphDrag = null; };
   canvas.addEventListener("pointerup", stopDrag);
   canvas.addEventListener("pointercancel", stopDrag);
+}
+
+function updateGraphProjection() {
+  if (!state.graphBaseLayout) return;
+  const root = $("graph-svg");
+  const positions = state.graph3d
+    ? projectGraph3d(state.graphBaseLayout, 1400, 820) : state.graphBaseLayout;
+  for (const element of root.querySelectorAll("[data-graph-node]")) {
+    const node = state.graphLayoutNodes.find((item) => item.id === element.getAttribute("data-graph-node"));
+    const point = positions[node?.id];
+    if (!node || !point) continue;
+    const width = node.type === "Invoice" ? 224 : 205;
+    const height = node.type === "Invoice" ? 68 : 62;
+    element.setAttribute("transform", `translate(${point.x} ${point.y}) scale(${point.scale || 1}) translate(${-width / 2} ${-height / 2})`);
+    element.setAttribute("opacity", state.graph3d ? Math.max(.62, Math.min(1, .72 + (point.scale || 1) * .28)) : 1);
+  }
+  for (const element of root.querySelectorAll("[data-graph-edge]")) {
+    const edge = state.graphLayoutEdges[Number(element.getAttribute("data-graph-edge"))];
+    const a = positions[edge?.source], b = positions[edge?.target];
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, distance = Math.max(1, Math.hypot(dx, dy));
+    const normalX = -dy / distance, normalY = dx / distance;
+    const bend = edge.type === "SAME_VENDOR_AS" ? 30 : edge.type === "SAME_CUSTOMER_AS" ? -30
+      : edge.type === "SAME_ITEM_DESCRIPTION_AS" ? 44 : 0;
+    const cx = (a.x + b.x) / 2 + normalX * bend;
+    const cy = (a.y + b.y) / 2 + normalY * bend;
+    element.setAttribute("d", `M${a.x},${a.y} Q${cx},${cy} ${b.x},${b.y}`);
+    element.setAttribute("opacity", state.graph3d ? Math.max(.38, Math.min(1, ((a.scale || 1) + (b.scale || 1)) / 2)) : 1);
+  }
 }
 
 function metricCard(value, label) {
@@ -689,8 +819,26 @@ function metricCard(value, label) {
 }
 
 function graphTransform() {
-  const x = 700, y = 410;
+  const x = state.graphViewWidth / 2, y = state.graphViewHeight / 2;
   return `translate(${state.graphPanX} ${state.graphPanY}) translate(${x} ${y}) scale(${state.graphZoom}) translate(${-x} ${-y})`;
+}
+
+function projectGraph3d(layout, width, height) {
+  const cosX = Math.cos(state.graphRotationX), sinX = Math.sin(state.graphRotationX);
+  const cosY = Math.cos(state.graphRotationY), sinY = Math.sin(state.graphRotationY);
+  const focalLength = 900;
+  return Object.fromEntries(Object.entries(layout).map(([id, point]) => {
+    const x = point.x - width / 2;
+    const y = point.y - height / 2;
+    const z = point.z || 0;
+    const rotatedX = x * cosY + z * sinY;
+    const rotatedZ = -x * sinY + z * cosY;
+    const rotatedY = y * cosX - rotatedZ * sinX;
+    const depth = y * sinX + rotatedZ * cosX;
+    const scale = focalLength / Math.max(360, focalLength - depth) * .84;
+    return [id, { ...point, x: width / 2 + rotatedX * scale,
+      y: height / 2 + rotatedY * scale, scale, depth }];
+  }));
 }
 
 function forceLayout(nodes, edges, nodeMap, focusId, width, height) {
@@ -701,6 +849,7 @@ function forceLayout(nodes, edges, nodeMap, focusId, width, height) {
     const radius = node.type === "Invoice" ? 250 + hash % 100 : 135 + hash % 60;
     return { id: node.id, type: node.type, x: node.id === focusId ? center.x : center.x + Math.cos(angle) * radius,
       y: node.id === focusId ? center.y : center.y + Math.sin(angle) * radius,
+      z: node.id === focusId ? 0 : node.type === "Invoice" ? (hash % 300) - 150 : 115 + (hash % 100),
       pinned: node.id === focusId };
   });
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
@@ -870,7 +1019,13 @@ async function askGraph(event) {
     const answer = result.context_truncated
       ? `${result.answer}\n\nSome matching connections were omitted by the retrieval limit; treat lists or totals as partial.`
       : result.answer;
-    addChatMessage("assistant", answer, result.sources || []);
+    const modeNote = result.answer_mode === "hosted_cached" ? "Reused a cached answer; no extra hosted call."
+      : result.answer_mode === "local_budget_fallback" ? "Hosted call budget reached; answered from Neo4j facts locally."
+        : result.answer_mode === "hosted" ? "Generated from retrieved graph facts with one hosted call." : "Answered from Neo4j facts locally.";
+    addChatMessage("assistant", `${answer}\n\n${modeNote}`, result.sources || []);
+    if (result.llm_call_limit !== undefined) {
+      $("chat-call-status").textContent = `Hosted calls this hour: ${result.llm_call_limit - result.llm_calls_remaining}/${result.llm_call_limit} used; ${result.llm_calls_remaining} remaining. Repeated questions use cached answers.`;
+    }
   } catch (error) {
     addChatMessage("assistant", error.message, [], true);
   } finally { button.disabled = false; input.focus(); }
@@ -927,12 +1082,22 @@ function init() {
     state.graphPage = 0; state.selectedNode = null; loadGraph();
   });
   $("show-direct-links").addEventListener("change", renderGraph);
+  $("full-network").addEventListener("change", renderGraph);
   ["filter-items", "filter-vendors", "filter-customers"].forEach((id) => $(id).addEventListener("change", renderGraph));
   $("reload-graph").addEventListener("click", loadGraph);
   $("zoom-in").addEventListener("click", () => setGraphZoom(state.graphZoom * 1.2));
   $("zoom-out").addEventListener("click", () => setGraphZoom(state.graphZoom / 1.2));
   $("fit-graph").addEventListener("click", () => {
-    state.graphZoom = 1; state.graphPanX = 0; state.graphPanY = 0; renderGraph();
+    state.graphZoom = 1; state.graphPanX = 0; state.graphPanY = 0;
+    state.graphRotationX = -.18; state.graphRotationY = .35; renderGraph();
+  });
+  $("graph-3d").addEventListener("change", (event) => {
+    state.graph3d = event.target.checked;
+    const help = $("graph-gesture-help");
+    if (help) help.textContent = state.graph3d
+      ? "Drag the background to orbit \u00b7 scroll to zoom \u00b7 select a node to inspect its neighborhood."
+      : "Drag the background to pan \u00b7 scroll to zoom \u00b7 select a node to inspect its neighborhood.";
+    renderGraph();
   });
   setupGraphInteractions();
   $("graph-search-form").addEventListener("submit", (event) => {

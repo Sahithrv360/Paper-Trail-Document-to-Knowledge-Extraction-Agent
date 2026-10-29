@@ -195,6 +195,7 @@ def summarize_graph_facts(retrieved, max_matches=6, max_links=6):
         return f"{kind} {node.get('filename') or node.get('papertrail_id')}"
 
     lines = []
+    seen_links = set()
     for match in matches[:max_matches]:
         node = match.get("node") or {}
         kind = node.get("papertrail_type")
@@ -213,21 +214,42 @@ def summarize_graph_facts(retrieved, max_matches=6, max_links=6):
             details.append("needs review")
         lines.append(f"{label(node)}" + (f" ({'; '.join(details)})" if details else ""))
 
-        link_lines = []
-        for link in (match.get("links") or [])[:max_links]:
+        ordered_links = sorted(match.get("links") or [], key=lambda link: (
+            0 if (link.get("relationship") or "").startswith("SAME_") else 1,
+            link.get("relationship") or ""))
+        for link in ordered_links[:max_links]:
             other = link.get("other_node") or {}
             relationship = link.get("relationship") or "LINKED_TO"
-            relation_text = {
-                "SAME_VENDOR_AS": "shares a vendor with",
-                "SAME_CUSTOMER_AS": "shares a customer with",
-                "SAME_ITEM_DESCRIPTION_AS": "shares an exact item description with",
-                "ISSUED": "issued by" if kind == "Invoice" else "issued",
-                "BILLED_TO": "billed to" if kind == "Invoice" else "bills",
-                "CONTAINS": "contains",
-                "SUPPORTS": "supported by",
-            }.get(relationship, relationship.replace("_", " ").lower())
-            link_lines.append(f"  - {relation_text} {label(other)}")
-        lines.extend(link_lines)
+            rel_props = link.get("relationship_properties") or {}
+            source_id, target_id = link.get("source_id"), link.get("target_id")
+            link_key = (relationship, tuple(sorted((source_id or "", target_id or ""))),
+                        rel_props.get("shared_description") or rel_props.get("shared_name"))
+            if link_key in seen_links:
+                continue
+            seen_links.add(link_key)
+            if relationship in ("SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"):
+                basis = {"SAME_VENDOR_AS": "shares a vendor with",
+                         "SAME_CUSTOMER_AS": "shares a customer with",
+                         "SAME_ITEM_DESCRIPTION_AS": "shares the same normalized item description with"}[relationship]
+                shared = rel_props.get("shared_description") or rel_props.get("shared_name")
+                note = f" (shared fact: {shared})" if shared else ""
+                if relationship == "SAME_ITEM_DESCRIPTION_AS":
+                    note += " [description match only; product identity is unverified]"
+                lines.append(f"  - {label(node)} {basis} {label(other)}{note}.")
+            elif relationship == "ISSUED":
+                lines.append(f"  - {label(node)} was issued by {label(other)}."
+                             if kind == "Invoice" else f"  - {label(node)} --[issued]--> {label(other)}")
+            elif relationship == "BILLED_TO":
+                lines.append(f"  - {label(node)} was billed to {label(other)}."
+                             if kind == "Invoice" else f"  - {label(other)} --[billed to]--> {label(node)}")
+            elif relationship == "CONTAINS":
+                lines.append(f"  - {label(node)} --[contains]--> {label(other)}"
+                             if kind == "Invoice" else f"  - {label(other)} --[contains]--> {label(node)}")
+            elif relationship == "SUPPORTS":
+                lines.append(f"  - {label(other)} --[supports]--> {label(node)}"
+                             if kind == "Invoice" else f"  - {label(node)} --[supports]--> {label(other)}")
+            else:
+                lines.append(f"  - {label(node)} --[{relationship.replace('_', ' ').lower()}]--> {label(other)}")
 
     answer = "Graph matches:\n" + "\n".join(lines)
     if len(matches) > max_matches or retrieved.get("context_truncated"):
@@ -289,7 +311,13 @@ class GraphAnswerProvider:
                        "relationships, or use outside knowledge. Treat SAME_VENDOR_AS and "
                        "SAME_CUSTOMER_AS as links through the named shared party. "
                        "SAME_ITEM_DESCRIPTION_AS means only an exact normalized description match, "
-                       "not verified product identity. State when the retrieved facts "
+                       "not verified product identity. For questions about invoice connections, "
+                       "give a clear step-by-step path using each invoice's printed invoice_number, "
+                       "the exact relationship type, and the shared vendor/customer/item value when "
+                       "present. Compare the linked invoices using only retrieved fields, explain "
+                       "why the link exists, and identify missing or needs-review facts. Distinguish "
+                       "a shared description from proof the purchased products are identical. "
+                       "State when the retrieved facts "
                        "do not answer the question. If context_truncated is true, do not claim "
                        "that lists or totals are complete. Cite only IDs from available_sources; "
                        "never invent a citation. Mention supporting Document or Invoice IDs and "

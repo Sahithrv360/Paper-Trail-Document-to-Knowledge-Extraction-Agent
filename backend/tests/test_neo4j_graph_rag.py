@@ -7,8 +7,8 @@ from unittest import mock
 
 from backend.app.graph_rag import (GRAPH_RAG_REMOTE_PHRASE, GraphAnswerProvider,
                                    Neo4jRetriever, query_terms, summarize_graph_facts)
-from backend.app.neo4j_sync import (derive_shared_item_hubs, export_neo4j_graph, prepare_snapshot,
-                                    sync_graph_export)
+from backend.app.neo4j_sync import (derive_direct_invoice_relationships, derive_shared_item_hubs,
+                                    export_neo4j_graph, prepare_snapshot, sync_graph_export)
 
 
 def graph_export():
@@ -106,6 +106,49 @@ class FakeProjectionDriver:
 
 
 class Neo4jSyncTests(unittest.TestCase):
+    def test_adding_synthetic_invoice_files_updates_only_supported_links(self):
+        export = graph_export()
+        self.assertEqual(derive_shared_item_hubs(export)[0], [])
+
+        def add_invoice(document_id, invoice_number, vendor_id, vendor_name, description):
+            support = [{"document_id": document_id, "review_status": "needs_review"}]
+            if not any(node["id"] == vendor_id for node in export["nodes"]):
+                export["nodes"].append({"id": vendor_id, "type": "Vendor",
+                    "props": {"name": vendor_name}, "support": support})
+            invoice_id = f"Invoice:{document_id}"
+            line_id = f"LineItem:{document_id}:0"
+            export["nodes"].extend([
+                {"id": f"Document:{document_id}", "type": "Document",
+                 "props": {"filename": f"{document_id}.jpg"}, "support": support},
+                {"id": invoice_id, "type": "Invoice",
+                 "props": {"invoice_number": invoice_number}, "support": support},
+                {"id": line_id, "type": "LineItem",
+                 "props": {"description": description}, "support": support},
+            ])
+            export["edges"].extend([
+                {"id": f"Document:{document_id}-SUPPORTS->{invoice_id}", "type": "SUPPORTS",
+                 "source": f"Document:{document_id}", "target": invoice_id, "props": {}, "support": support},
+                {"id": f"{vendor_id}-ISSUED->{invoice_id}", "type": "ISSUED",
+                 "source": vendor_id, "target": invoice_id, "props": {}, "support": support},
+                {"id": f"{invoice_id}-CONTAINS->{line_id}", "type": "CONTAINS",
+                 "source": invoice_id, "target": line_id, "props": {"row_index": 0}, "support": support},
+            ])
+
+        add_invoice("d2", "INV-43", "Vendor:v1", "Acme Books", "  INVOICE   MAPPING BOOK ")
+        hubs, hub_edges = derive_shared_item_hubs(export)
+        direct = derive_direct_invoice_relationships(export, hubs, hub_edges)
+        self.assertEqual(len(hubs), 1)
+        self.assertEqual({edge["type"] for edge in direct},
+                         {"SAME_VENDOR_AS", "SAME_ITEM_DESCRIPTION_AS"})
+
+        # A later file from a different vendor with a unique item adds no false links.
+        add_invoice("d3", "INV-44", "Vendor:v2", "Northwind Paper", "New catalog item")
+        hubs, hub_edges = derive_shared_item_hubs(export)
+        direct = derive_direct_invoice_relationships(export, hubs, hub_edges)
+        self.assertEqual(len(hubs), 1)
+        self.assertEqual(sum(edge["type"] == "SAME_VENDOR_AS" for edge in direct), 1)
+        self.assertEqual(sum(edge["type"] == "SAME_ITEM_DESCRIPTION_AS" for edge in direct), 1)
+
     def test_shared_descriptions_connect_invoices_through_one_hub(self):
         export = graph_export()
         support = [{"document_id": "d2", "review_status": "approved"}]

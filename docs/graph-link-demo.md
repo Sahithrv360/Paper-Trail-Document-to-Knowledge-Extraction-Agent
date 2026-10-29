@@ -48,4 +48,14 @@ RETURN a.invoice_number AS invoice_a,
        b.invoice_number AS invoice_b;
 ```
 
-In the PaperTrail UI, open **Graph**, search for invoice `62517865`, and select it. The default visualization shows shared hubs; enable **Direct invoice links** to display invoice-to-invoice shortcut edges. The detail panel lists connected invoices and the shared fact behind each link.
+In the PaperTrail UI, open **Graph**, search for invoice `62517865`, and select it. The default visualization shows shared hubs; enable **Direct links** to display invoice-to-invoice shortcut edges. The detail panel lists connected invoices and the shared fact behind each link. The optional **3D perspective** toggle uses a lightweight SVG projection; drag the background to orbit it.
+
+## Synthetic incremental-file regression
+
+`test_adding_synthetic_invoice_files_updates_only_supported_links` builds three small invoices in memory. The second file repeats the first vendor and item description with different case and whitespace. The third uses a different vendor and unique item. The test expects the second file to create vendor and item links, while the third creates no unsupported connection. This keeps demo data out of `watched/` and the production graph.
+
+Run it with:
+
+```powershell
+python -m unittest backend.tests.test_neo4j_graph_rag.Neo4jSyncTests.test_adding_synthetic_invoice_files_updates_only_supported_links -v
+```
