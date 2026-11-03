@@ -26,11 +26,15 @@ export default function DocumentInspectorPage() {
   const [viewMode, setViewMode] = useState("invoice"); // 'invoice' | 'ocr' | 'image'
   const [imageZoom, setImageZoom] = useState(1);
   const [imageError, setImageError] = useState(false);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [loadedImageUrl, setLoadedImageUrl] = useState('');
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       setIsLoading(true);
+      setImageError(false);
+      setLoadedImageUrl('');
       let currentDoc = null;
       if (docId) {
         currentDoc = await aiService.getDocument(docId);
@@ -82,6 +86,26 @@ export default function DocumentInspectorPage() {
     load();
   }, [docId]);
 
+  useEffect(() => {
+    if (viewMode !== 'image' || !doc?.id || loadedImageUrl) return undefined;
+    let cancelled = false;
+    setImageLoading(true);
+    setImageError(false);
+    aiService.getDocumentImage(doc.id).then((url) => {
+      if (cancelled) URL.revokeObjectURL(url);
+      else setLoadedImageUrl(url);
+    }).catch(() => {
+      if (!cancelled) setImageError(true);
+    }).finally(() => {
+      if (!cancelled) setImageLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [doc?.id, loadedImageUrl, viewMode]);
+
+  useEffect(() => () => {
+    if (loadedImageUrl) URL.revokeObjectURL(loadedImageUrl);
+  }, [loadedImageUrl]);
+
   if (isLoading) {
     return (
       <div style={{ padding: '60px', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -113,7 +137,7 @@ export default function DocumentInspectorPage() {
   const currentPage = pages.find(p => p.page_number === selectedPageNum) || pages[0];
   const meta = doc.invoice_meta || {};
   const items = meta.items || [];
-  const imageUrl = doc.image_url || `/api/documents/${doc.id}/image`;
+  const imageUrl = doc.image_url || loadedImageUrl;
 
   // Helper to check if text matches the currently selected entity / highlight item
   const isHighlighted = (text) => {
@@ -782,7 +806,11 @@ export default function DocumentInspectorPage() {
                 width: '100%',
                 minHeight: '100%'
               }}>
-                {!imageError ? (
+                {imageLoading ? (
+                  <div className="card" style={{ padding: '40px', textAlign: 'center', color: '#64748b' }}>
+                    Loading scanned page…
+                  </div>
+                ) : !imageError && imageUrl ? (
                   <div style={{
                     transform: `scale(${imageZoom})`,
                     transformOrigin: 'top center',

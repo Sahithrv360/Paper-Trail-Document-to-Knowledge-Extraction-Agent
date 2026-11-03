@@ -1,0 +1,40 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-006",
+  "source_file": "DEMO-2026-006.json",
+  "record": {
+    "invoice_number": "DEMO-2026-006",
+    "invoice_date": "2026-10-06",
+    "currency": "USD",
+    "vendor": {
+      "name": "Maple Tech",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Riverbend School",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 240,
+    "tax_amount": 24,
+    "total_amount": 264,
+    "items": [
+      {
+        "description": "USB-C docking station",
+        "quantity": 2,
+        "unit_price": 120,
+        "net_amount": 240,
+        "tax_rate_percent": 10,
+        "vat_amount": 24,
+        "gross_amount": 264
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}

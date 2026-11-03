@@ -23,12 +23,38 @@ const COLOR_MAP = {
   Entity: '#f43f5e'        // Coral Red
 };
 
+const GRAPH_SEARCH_IGNORED_FIELDS = new Set(['summary_text', 'chunk_text', 'body', 'synthetic_notice']);
+const searchableNodeText = (node) => {
+  const data = node?.data || node?.properties || {};
+  const values = [node?.id, node?.label, node?.name, node?.type];
+  for (const [key, value] of Object.entries(data)) {
+    if (GRAPH_SEARCH_IGNORED_FIELDS.has(key) || value === null || value === undefined) continue;
+    if (['string', 'number', 'boolean'].includes(typeof value)) values.push(value);
+    else if (Array.isArray(value)) values.push(...value.filter(item => ['string', 'number'].includes(typeof item)));
+  }
+  return values.join(' ').toLocaleLowerCase();
+};
+const searchableRelationText = (edge, nodesById) => {
+  const source = nodesById.get(String(edge.source));
+  const target = nodesById.get(String(edge.target));
+  const values = [edge.id, edge.type, edge.label, edge.source, edge.target,
+    source?.id, source?.label, source?.name, target?.id, target?.label, target?.name];
+  for (const [key, value] of Object.entries(edge.data || edge.properties || {})) {
+    if (value === null || value === undefined) continue;
+    if (['string', 'number', 'boolean'].includes(typeof value)) values.push(key, value);
+    else if (Array.isArray(value)) values.push(key, ...value.filter(item =>
+      ['string', 'number'].includes(typeof item)));
+  }
+  return values.join(' ').toLocaleLowerCase();
+};
+
 export default function KnowledgeGraphPage() {
   const [activeTab, setActiveTab] = useState('graph'); // 'graph' | 'table' | 'raw'
   const [graphData, setGraphData] = useState({ nodes: [], edges: [], meta: {} });
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState(null);
+  const [selectedEdge, setSelectedEdge] = useState(null);
   const [hoveredNode, setHoveredNode] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [filterType, setFilterType] = useState('All');
@@ -38,7 +64,8 @@ export default function KnowledgeGraphPage() {
   const sigmaContainerRef = useRef(null);
   const sigmaRef = useRef(null);
   const sigmaGraphRef = useRef(null);
-  const viewStateRef = useRef({ searchQuery: '', filterType: 'All', selectedId: null, hoveredId: null });
+  const viewStateRef = useRef({ searchQuery: '', filterType: 'All', selectedId: null,
+    selectedEdgeKey: null, selectedEdgeEndpoints: [], hoveredId: null });
 
   // Full Page Toggle with guaranteed CSS fallback
   const toggleFullscreen = useCallback(() => {
@@ -172,6 +199,7 @@ export default function KnowledgeGraphPage() {
         labelSize: type === 'Invoice' || type === 'ConversationSummary' ? 14 : 12,
         color: COLOR_MAP[type] || node.color || COLOR_MAP.Entity,
         type,
+        searchText: searchableNodeText(node),
         degree: nodeDegrees.get(id) || 0,
         sourceDoc: original?.data?.filename || original?.data?.source_file
           || (type === 'SyntheticEmail' || type === 'ConversationSummary' ? 'Synthetic demo' : 'Invoice'),
@@ -180,16 +208,24 @@ export default function KnowledgeGraphPage() {
       });
     });
 
+    const edgeByKey = new Map();
     graphData.edges.forEach((edge, index) => {
       const source = String(edge.source);
       const target = String(edge.target);
       if (!graph.hasNode(source) || !graph.hasNode(target)) return;
       const key = `${String(edge.id || 'edge')}:${index}`;
+      const sourceNode = sourceNodes.get(source);
+      const targetNode = sourceNodes.get(target);
       graph.addEdgeWithKey(key, source, target, {
         label: edge.label || edge.type || 'RELATED_TO',
+        searchText: searchableRelationText(edge, sourceNodes),
+        relation: edge,
+        sourceLabel: sourceNode?.label || sourceNode?.data?.invoice_number || source,
+        targetLabel: targetNode?.label || targetNode?.data?.invoice_number || target,
         color: '#cbd5e1',
         size: 1
       });
+      edgeByKey.set(key, edge);
     });
 
     sigmaGraphRef.current = graph;
@@ -204,16 +240,17 @@ export default function KnowledgeGraphPage() {
       allowInvalidContainer: false,
       nodeReducer: (nodeId, displayData, attributes) => {
         const state = viewStateRef.current;
-        const label = String(attributes.label || '').toLowerCase();
         const query = state.searchQuery.trim().toLowerCase();
-        const matchesSearch = !query || label.includes(query) || String(attributes.type).toLowerCase().includes(query);
+        const matchesSearch = !query || String(attributes.searchText || attributes.label || '')
+          .toLowerCase().includes(query);
         const matchesType = state.filterType === 'All' || attributes.type.toLowerCase() === state.filterType.toLowerCase();
         const active = nodeId === state.selectedId || nodeId === state.hoveredId;
+        const selectedByRelation = state.selectedEdgeEndpoints.includes(nodeId);
         const isSearchMatch = Boolean(query && matchesSearch && matchesType);
         return {
           ...displayData,
-          color: matchesSearch && matchesType ? attributes.color : '#dbe2ea',
-          size: active ? displayData.size * 1.35 : isSearchMatch ? displayData.size * 1.2 : displayData.size,
+          color: matchesSearch && matchesType || selectedByRelation ? attributes.color : '#dbe2ea',
+          size: active || selectedByRelation ? displayData.size * 1.35 : isSearchMatch ? displayData.size * 1.2 : displayData.size,
           labelSize: attributes.labelSize,
           labelVisibility: active || isSearchMatch ? 'visible' : displayData.labelVisibility,
           backdropVisibility: active || isSearchMatch ? 'visible' : 'hidden',
@@ -227,12 +264,15 @@ export default function KnowledgeGraphPage() {
       edgeReducer: (edgeId, displayData) => {
         const state = viewStateRef.current;
         const [source, target] = graph.extremities(edgeId);
-        const active = source === state.selectedId || target === state.selectedId
+        const query = state.searchQuery.trim().toLowerCase();
+        const matchesSearch = query && String(graph.getEdgeAttributes(edgeId).searchText || '').includes(query);
+        const active = edgeId === state.selectedEdgeKey || matchesSearch
+          || source === state.selectedId || target === state.selectedId
           || source === state.hoveredId || target === state.hoveredId;
         return {
           ...displayData,
           color: active ? '#2563eb' : '#d5dce5',
-          size: active ? 2.5 : 0.8,
+          size: edgeId === state.selectedEdgeKey ? 4 : matchesSearch ? 3 : active ? 2.5 : 0.8,
         };
       }
     });
@@ -241,16 +281,31 @@ export default function KnowledgeGraphPage() {
 
     const selectNode = (nodeId) => {
       const attributes = graph.getNodeAttributes(nodeId);
+      setSelectedEdge(null);
       setSelectedNode({ id: nodeId, ...attributes });
+    };
+    const selectEdge = (edgeKey) => {
+      const attributes = graph.getEdgeAttributes(edgeKey);
+      const edge = edgeByKey.get(edgeKey);
+      if (!edge) return;
+      setSelectedNode(null);
+      setSelectedEdge({ ...edge, key: edgeKey,
+        sourceLabel: attributes.sourceLabel, targetLabel: attributes.targetLabel });
+      const [source, target] = graph.extremities(edgeKey);
+      const sourcePosition = graph.getNodeAttributes(source);
+      const targetPosition = graph.getNodeAttributes(target);
+      sigma.getCamera().animate({ x: (sourcePosition.x + targetPosition.x) / 2,
+        y: (sourcePosition.y + targetPosition.y) / 2, ratio: 0.25 }, { duration: 350 });
     };
     const enterNode = ({ node }) => {
       const attributes = graph.getNodeAttributes(node);
       setHoveredNode({ id: node, ...attributes });
     };
     renderer.on('clickNode', ({ node }) => selectNode(node));
+    renderer.on('clickEdge', ({ edge }) => selectEdge(edge));
     renderer.on('enterNode', enterNode);
     renderer.on('leaveNode', () => setHoveredNode(null));
-    renderer.on('clickStage', () => setSelectedNode(null));
+    renderer.on('clickStage', () => { setSelectedNode(null); setSelectedEdge(null); });
     }).catch(error => console.error('Could not initialize Sigma graph renderer:', error));
 
     return () => {
@@ -266,29 +321,43 @@ export default function KnowledgeGraphPage() {
       searchQuery,
       filterType,
       selectedId: selectedNode?.id ? String(selectedNode.id) : null,
+      selectedEdgeKey: selectedEdge?.key || null,
+      selectedEdgeEndpoints: selectedEdge ? [String(selectedEdge.source), String(selectedEdge.target)] : [],
       hoveredId: hoveredNode?.id ? String(hoveredNode.id) : null
     };
     sigmaRef.current?.scheduleRefresh({ skipIndexation: true });
 
-  }, [searchQuery, filterType, selectedNode, hoveredNode]);
+  }, [searchQuery, filterType, selectedNode, selectedEdge, hoveredNode]);
 
   useEffect(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query || !sigmaGraphRef.current || !sigmaRef.current) return;
-    const match = sigmaGraphRef.current.findNodes(node => {
+    const graph = sigmaGraphRef.current;
+    const match = graph.findNodes(node => {
       const data = sigmaGraphRef.current.getNodeAttributes(node);
-      return String(data.label).toLowerCase().includes(query);
+      return String(data.searchText || data.label).toLowerCase().includes(query);
     })[0];
     if (match) {
-      const { x, y } = sigmaGraphRef.current.getNodeAttributes(match);
+      const { x, y } = graph.getNodeAttributes(match);
       sigmaRef.current.getCamera().animate({ x, y, ratio: 0.25 }, { duration: 350 });
+      return;
     }
-  }, [searchQuery]);
+    const nodesById = new Map((graphData.nodes || []).map(node => [String(node.id), node]));
+    const edge = (graphData.edges || []).find(item => searchableRelationText(item, nodesById).includes(query));
+    const edgeKey = edge && graph.edges().find(key => graph.getEdgeAttributes(key).relation === edge);
+    if (edgeKey) {
+      const [source, target] = graph.extremities(edgeKey);
+      const left = graph.getNodeAttributes(source), right = graph.getNodeAttributes(target);
+      sigmaRef.current.getCamera().animate({ x: (left.x + right.x) / 2,
+        y: (left.y + right.y) / 2, ratio: 0.25 }, { duration: 350 });
+    }
+  }, [searchQuery, graphData.nodes, graphData.edges]);
 
   const selectGraphNode = useCallback((node) => {
     if (!node) return;
     const degree = (graphData.edges || []).filter(edge => String(edge.source) === String(node.id)
       || String(edge.target) === String(node.id)).length;
+    setSelectedEdge(null);
     setSelectedNode({ ...node, properties: node.properties || node.data || {},
       sourceDoc: node.sourceDoc || node.data?.filename || node.data?.source_file
         || (node.data?.synthetic ? 'Synthetic demo' : 'Invoice'), degree: node.degree ?? degree });
@@ -338,6 +407,41 @@ export default function KnowledgeGraphPage() {
     });
     return counts;
   }, [graphData.nodes]);
+
+  const graphSearchMatches = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+    const nodesById = new Map((graphData.nodes || []).map(node => [String(node.id), node]));
+    const nodes = (graphData.nodes || []).filter(node => searchableNodeText(node).includes(query))
+      .map(node => ({ kind: 'node', key: String(node.id), node }));
+    const edges = (graphData.edges || []).filter(edge => searchableRelationText(edge, nodesById).includes(query))
+      .map((edge, index) => ({ kind: 'relation', key: `${String(edge.id || 'edge')}:${index}`, edge }));
+    return [...nodes, ...edges].slice(0, 10);
+  }, [graphData.nodes, graphData.edges, searchQuery]);
+
+  const selectSearchMatch = (match) => {
+    if (match.kind === 'node') {
+      selectGraphNode(match.node);
+      const node = sigmaGraphRef.current;
+      if (node?.hasNode(String(match.node.id))) {
+        const position = node.getNodeAttributes(String(match.node.id));
+        sigmaRef.current?.getCamera().animate({ x: position.x, y: position.y, ratio: 0.22 }, { duration: 350 });
+      }
+      return;
+    }
+    const graph = sigmaGraphRef.current;
+    const edgeKey = graph?.edges().find(key => graph.getEdgeAttributes(key).relation === match.edge);
+    if (!graph || !edgeKey) return;
+    const attributes = graph.getEdgeAttributes(edgeKey);
+    const [source, target] = graph.extremities(edgeKey);
+    const sourcePosition = graph.getNodeAttributes(source);
+    const targetPosition = graph.getNodeAttributes(target);
+    setSelectedNode(null);
+    setSelectedEdge({ ...match.edge, key: edgeKey,
+      sourceLabel: attributes.sourceLabel, targetLabel: attributes.targetLabel });
+    sigmaRef.current?.getCamera().animate({ x: (sourcePosition.x + targetPosition.x) / 2,
+      y: (sourcePosition.y + targetPosition.y) / 2, ratio: 0.22 }, { duration: 350 });
+  };
 
   // Connected relationships for selected node
   const selectedNodeRels = useMemo(() => {
@@ -497,6 +601,7 @@ export default function KnowledgeGraphPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           {/* Light Theme Search Box */}
           <div style={{
+            position: 'relative',
             display: 'flex',
             alignItems: 'center',
             backgroundColor: 'var(--bg-app)',
@@ -509,9 +614,15 @@ export default function KnowledgeGraphPage() {
             <Search size={14} color="var(--text-muted)" />
             <input 
               type="text"
-              placeholder="Search graph entities..."
+              aria-label="Search graph nodes and relationships"
+              title="Search nodes, relationship types, IDs, endpoints, and properties"
+              placeholder="Search nodes or relationships..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={event => {
+                if (event.key !== 'Enter') return;
+                if (graphSearchMatches[0]) selectSearchMatch(graphSearchMatches[0]);
+              }}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -525,6 +636,34 @@ export default function KnowledgeGraphPage() {
               <X size={12} color="var(--text-muted)" style={{ cursor: 'pointer' }} onClick={() => setSearchQuery('')} />
             )}
           </div>
+          {searchQuery.trim() && <span aria-live="polite" style={{ whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+            {graphSearchMatches.length ? `${graphSearchMatches.length}${graphSearchMatches.length === 10 ? '+' : ''} matches` : 'No matches'}
+          </span>}
+
+          {searchQuery.trim() && graphSearchMatches.length > 0 && (
+            <div role="listbox" aria-label="Graph search results" style={{
+              position: 'absolute', top: 'calc(100% + 8px)', right: 0, width: 'min(380px, calc(100vw - 32px))',
+              maxHeight: '360px', overflowY: 'auto', background: '#fff', border: '1px solid var(--border-light)',
+              borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-xl)', zIndex: 30, padding: '6px'
+            }}>
+              {graphSearchMatches.map(match => {
+                const isNode = match.kind === 'node';
+                const label = isNode ? match.node.label || match.node.id
+                  : `${match.edge.type || match.edge.label || 'Relationship'}: ${match.edge.sourceLabel || graphData.nodes.find(n => String(n.id) === String(match.edge.source))?.label || match.edge.source} → ${match.edge.targetLabel || graphData.nodes.find(n => String(n.id) === String(match.edge.target))?.label || match.edge.target}`;
+                return <button key={`${match.kind}:${match.key}`} role="option" aria-selected="false"
+                  onClick={() => selectSearchMatch(match)}
+                  style={{ display: 'block', width: '100%', border: 0, borderRadius: '6px', background: 'transparent',
+                    padding: '9px 10px', textAlign: 'left', cursor: 'pointer', color: 'var(--text-primary)' }}
+                  onMouseEnter={event => { event.currentTarget.style.background = '#f1f5f9'; }}
+                  onMouseLeave={event => { event.currentTarget.style.background = 'transparent'; }}>
+                  <span style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700 }}>{label}</span>
+                  <span style={{ display: 'block', marginTop: '3px', color: 'var(--text-muted)', fontSize: '0.68rem' }}>
+                    {isNode ? `${match.node.type || 'Entity'} node` : 'Relationship'}
+                  </span>
+                </button>;
+              })}
+            </div>
+          )}
 
           {/* Type Filter Select */}
           <select
@@ -699,7 +838,7 @@ export default function KnowledgeGraphPage() {
           <div style={{
             position: 'absolute',
             bottom: '20px',
-            right: selectedNode ? '340px' : '20px',
+            right: selectedNode || selectedEdge ? '340px' : '20px',
             backgroundColor: 'rgba(255, 255, 255, 0.95)',
             backdropFilter: 'blur(8px)',
             border: '1px solid var(--border-light)',
@@ -709,7 +848,7 @@ export default function KnowledgeGraphPage() {
             flexWrap: 'wrap',
             alignItems: 'center',
             gap: '14px',
-            maxWidth: selectedNode ? 'min(760px, calc(100% - 360px))' : 'min(860px, calc(100% - 32px))',
+            maxWidth: selectedNode || selectedEdge ? 'min(760px, calc(100% - 360px))' : 'min(860px, calc(100% - 32px))',
             zIndex: 10,
             transition: 'right 0.2s ease',
             boxShadow: 'var(--shadow-md)'
@@ -938,6 +1077,45 @@ export default function KnowledgeGraphPage() {
                   })}
                 </div>
               </div>
+            </div>
+          )}
+          {selectedEdge && (
+            <div style={{ position: 'absolute', top: '14px', right: '14px', bottom: '14px',
+              width: 'min(340px, calc(100% - 28px))', background: '#fff', border: '1px solid var(--border-light)',
+              borderRadius: 'var(--radius-lg)', padding: '18px', display: 'flex', flexDirection: 'column',
+              gap: '14px', zIndex: 20, boxShadow: 'var(--shadow-xl)', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                borderBottom: '1px solid var(--border-light)', paddingBottom: '12px' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)',
+                  textTransform: 'uppercase', letterSpacing: '0.04em' }}>Relationship details</span>
+                <button aria-label="Close relationship details" onClick={() => setSelectedEdge(null)}
+                  style={{ background: 'transparent', border: 0, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                  <X size={16} />
+                </button>
+              </div>
+              <div style={{ padding: '12px', borderRadius: 'var(--radius-md)', background: '#eff6ff',
+                border: '1px solid #bfdbfe', color: 'var(--text-primary)', fontSize: '0.82rem',
+                fontWeight: 700, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                {selectedEdge.sourceLabel || selectedEdge.source} <span style={{ color: 'var(--primary-600)' }}>
+                  — {selectedEdge.label || selectedEdge.type || 'RELATED_TO'} →</span> {selectedEdge.targetLabel || selectedEdge.target}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Relationship type: <strong style={{ color: 'var(--text-primary)' }}>{selectedEdge.type || selectedEdge.label || 'RELATED_TO'}</strong>
+              </div>
+              {Object.entries(selectedEdge.data || selectedEdge.properties || {}).length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(90px, 0.7fr) minmax(0, 1.3fr)',
+                  gap: '8px 12px', padding: '12px', border: '1px solid var(--border-light)',
+                  borderRadius: 'var(--radius-md)' }}>
+                  {Object.entries(selectedEdge.data || selectedEdge.properties || {}).map(([key, value]) => (
+                    <React.Fragment key={key}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem', overflowWrap: 'anywhere' }}>{key}</span>
+                      <span style={{ color: 'var(--text-primary)', fontSize: '0.75rem', fontWeight: 600, overflowWrap: 'anywhere' }}>
+                        {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                      </span>
+                    </React.Fragment>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

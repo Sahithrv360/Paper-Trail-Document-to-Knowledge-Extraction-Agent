@@ -305,14 +305,19 @@ class GraphStore:
             history.append(item)
         return history
 
-    def synced_documents(self) -> list:
+    def synced_documents(self, include_records: bool = False) -> list:
         """Every document known to the graph: latest hash/version, state, review, last sync."""
         with self._db() as db:
+            record_columns = (
+                ", CASE WHEN e.state='active' THEN e.record END AS active_record, "
+                "(SELECT r.corrected_record FROM reviews r WHERE r.extraction_id=e.extraction_id "
+                "AND r.state='active' ORDER BY r.review_id DESC LIMIT 1) AS corrected_record"
+            ) if include_records else ""
             rows = db.execute(
                 "SELECT e.document_id, e.extraction_id, e.content_hash, e.version, e.source_file, "
                 "e.state, e.review_status, e.validation_status, e.provider, e.model_revision, "
                 "(SELECT MAX(created_at) FROM graph_changes c WHERE c.document_id = e.document_id) "
-                "AS last_synced_at "
+                "AS last_synced_at" + record_columns + " "
                 "FROM extraction_versions e WHERE e.extraction_id = (SELECT MAX(extraction_id) "
                 "FROM extraction_versions x WHERE x.document_id = e.document_id) "
                 "ORDER BY e.document_id").fetchall()
@@ -376,10 +381,10 @@ class GraphStore:
                      for eid in sorted(edges)]
         return {"nodes": node_list, "edges": edge_list}
 
-    def entity_suggestions(self) -> list:
+    def entity_suggestions(self, nodes=None) -> list:
         """Possible same-entity pairs for a reviewer. Never merged automatically."""
         groups = {}
-        for node in self.export()["nodes"]:
+        for node in (self.export()["nodes"] if nodes is None else nodes):
             if node["type"] not in SHARED_NODE_TYPES:
                 continue
             props = node["props"]

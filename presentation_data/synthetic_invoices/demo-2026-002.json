@@ -1,0 +1,40 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-002",
+  "source_file": "DEMO-2026-002.json",
+  "record": {
+    "invoice_number": "DEMO-2026-002",
+    "invoice_date": "2026-10-02",
+    "currency": "USD",
+    "vendor": {
+      "name": "Maple Tech",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Blue Peak Studio",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 120,
+    "tax_amount": 12,
+    "total_amount": 132,
+    "items": [
+      {
+        "description": "USB-C docking station",
+        "quantity": 1,
+        "unit_price": 120,
+        "net_amount": 120,
+        "tax_rate_percent": 10,
+        "vat_amount": 12,
+        "gross_amount": 132
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}

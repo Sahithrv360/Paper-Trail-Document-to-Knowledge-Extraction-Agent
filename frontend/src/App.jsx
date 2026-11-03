@@ -1,24 +1,25 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import AppShell from './components/layout/AppShell';
 
-import DashboardPage from './pages/DashboardPage';
-import DocumentsPage from './pages/DocumentsPage';
-import DocumentProcessingPage from './pages/DocumentProcessingPage';
-import DocumentInspectorPage from './pages/DocumentInspectorPage';
-import KnowledgeRepositoryPage from './pages/KnowledgeRepositoryPage';
-import KnowledgeGraphPage from './pages/KnowledgeGraphPage';
-import AskKnowledgePage from './pages/AskKnowledgePage';
-import ReviewCenterPage from './pages/ReviewCenterPage';
-import ContradictionsPage from './pages/ContradictionsPage';
-import SemanticModelPage from './pages/SemanticModelPage';
-import AnalyticsPage from './pages/AnalyticsPage';
-import ArchitecturePage from './pages/ArchitecturePage';
-import SettingsPage from './pages/SettingsPage';
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
+const DocumentProcessingPage = lazy(() => import('./pages/DocumentProcessingPage'));
+const DocumentInspectorPage = lazy(() => import('./pages/DocumentInspectorPage'));
+const KnowledgeRepositoryPage = lazy(() => import('./pages/KnowledgeRepositoryPage'));
+const KnowledgeGraphPage = lazy(() => import('./pages/KnowledgeGraphPage'));
+const AskKnowledgePage = lazy(() => import('./pages/AskKnowledgePage'));
+const ReviewCenterPage = lazy(() => import('./pages/ReviewCenterPage'));
+const ContradictionsPage = lazy(() => import('./pages/ContradictionsPage'));
+const SemanticModelPage = lazy(() => import('./pages/SemanticModelPage'));
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
+const ArchitecturePage = lazy(() => import('./pages/ArchitecturePage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 export default function App() {
   return (
     <BrowserRouter>
+      <Suspense fallback={<main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: '#475569', fontFamily: 'system-ui, sans-serif' }}>Loading PaperTrail…</main>}>
       <Routes>
         <Route path="/" element={<AppShell />}>
           <Route index element={<DashboardPage />} />
@@ -47,6 +48,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }

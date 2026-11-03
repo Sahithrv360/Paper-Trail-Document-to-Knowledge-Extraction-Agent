@@ -14,6 +14,27 @@ class AIService {
   constructor() {
     this.apiBase = '/api';
     this.apiError = null;
+    this.graphCache = null;
+    this.graphCacheAt = 0;
+    this.graphPromise = null;
+    this.documentsCache = null;
+    this.documentsCacheAt = 0;
+    this.documentsPromise = null;
+    this.analyticsCache = null;
+    this.analyticsCacheAt = 0;
+    this.analyticsPromise = null;
+    this.conversationsCache = null;
+    this.conversationsCacheAt = 0;
+    this.conversationsPromise = null;
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('papertrail:data-changed', () => {
+        this.graphCache = null;
+        this.documentsCache = null;
+        this.analyticsCache = null;
+        this.conversationsCache = null;
+      });
+    }
 
     const getStored = (key, fallback) => {
       try {
@@ -280,30 +301,72 @@ class AIService {
     }));
   }
 
-  async queryKnowledge(query, knowledgeBase = null) {
-    return this.answerKnowledgeQuery(query, knowledgeBase);
+  async queryKnowledge(query, knowledgeBase = null, mode = 'hybrid', onProgress = null, includeUnreviewed = false, history = [], conversationId = null) {
+    return this.answerKnowledgeQuery(query, knowledgeBase, mode, onProgress, includeUnreviewed, history, conversationId);
   }
 
-  async answerKnowledgeQuery(query, knowledgeBase = null) {
+  async answerKnowledgeQuery(query, knowledgeBase = null, mode = 'hybrid', onProgress = null, includeUnreviewed = false, history = [], conversationId = null) {
     try {
-      const res = await this.request('/graph-rag', {
+      const requestId = mode === 'agent' ? crypto.randomUUID() : undefined;
+      let polling = Boolean(requestId && onProgress);
+      const pollProgress = async () => {
+        while (polling) {
+          try {
+            const statusResponse = await this.request(`/agent-runs/${requestId}`);
+            const status = await statusResponse.json();
+            onProgress(status);
+            if (status.status === 'completed' || status.status === 'failed') break;
+          } catch (_) { /* The query request still carries the authoritative error. */ }
+          await new Promise(resolve => setTimeout(resolve, 350));
+        }
+      };
+      const progressPoll = polling ? pollProgress() : null;
+      const responsePromise = this.request('/graph-rag', {
         method: 'POST',
-        body: JSON.stringify({ question: query, generate: false, limit: 8 })
+        body: JSON.stringify({ question: query, generate: mode === 'agent', limit: 8, mode,
+          include_unreviewed: includeUnreviewed, request_id: requestId,
+          history: Array.isArray(history) ? history.slice(-8).map(({ role, content }) => ({
+            role: role === 'assistant' ? 'assistant' : 'user',
+            content: String(content || '').slice(0, 1200)
+          })) : [], conversation_id: conversationId })
       });
+      let res;
+      try {
+        res = await responsePromise;
+      } finally {
+        polling = false;
+        if (progressPoll) await progressPoll;
+      }
       const data = await res.json();
       const links = data.links || data.matches?.flatMap(match => match.links || []) || [];
       const fullGraph = await this.getKnowledgeGraph();
       const sourceIds = new Set((data.sources || []).map(source => source.id));
-      const linkedEdges = fullGraph.edges.filter(edge => sourceIds.has(edge.source) || sourceIds.has(edge.target));
-      const nodeIds = new Set(sourceIds);
-      linkedEdges.forEach(edge => { nodeIds.add(edge.source); nodeIds.add(edge.target); });
-      const evidenceNodes = fullGraph.nodes.filter(node => nodeIds.has(node.id)).slice(0, 40);
+      const linkedNodeIds = new Set(links.flatMap(link => link.source_ids || []));
+      const citedEdgeIds = new Set(links.flatMap(link => link.edge_ids || []));
+      const directEdges = fullGraph.edges.filter(edge => citedEdgeIds.has(edge.id));
+      const connectedEdges = fullGraph.edges.filter(edge =>
+        linkedNodeIds.has(edge.source) && linkedNodeIds.has(edge.target));
+      const edgesById = new Map([...directEdges, ...connectedEdges].map(edge => [edge.id, edge]));
+      const candidateEdges = [...edgesById.values()];
+      const candidateNodeIds = [...new Set([
+        ...sourceIds, ...linkedNodeIds,
+        ...candidateEdges.flatMap(edge => [edge.source, edge.target])
+      ])];
+      const fullNodesById = new Map(fullGraph.nodes.map(node => [node.id, node]));
+      const evidenceNodes = candidateNodeIds.slice(0, 24)
+        .map(id => fullNodesById.get(id)).filter(Boolean)
+        .map(node => ({ ...node, isEvidenceSource: sourceIds.has(node.id) }));
       const evidenceNodeIds = new Set(evidenceNodes.map(node => node.id));
-      const evidenceEdges = linkedEdges.filter(edge => evidenceNodeIds.has(edge.source) && evidenceNodeIds.has(edge.target)).slice(0, 60);
-      const citations = (data.sources || []).map(source => ({
-        source: source.filename || `Invoice ${source.invoice_number || source.id}`,
-        quote: source.invoice_number ? `Invoice number ${source.invoice_number}` : source.type,
-        confidence: null,
+      const evidenceEdges = candidateEdges.filter(edge =>
+        evidenceNodeIds.has(edge.source) && evidenceNodeIds.has(edge.target)).slice(0, 36);
+      const citations = (data.evidence_cards || data.sources || []).map(source => ({
+        source: source.source || source.filename || `${source.type || 'Source'} ${source.invoice_number || source.id}`,
+        quote: source.quote || (source.invoice_number ? `Invoice number ${source.invoice_number}` : source.type),
+        confidence: source.confidence ?? null,
+        review_status: source.review_status || source.data?.review_status || null,
+        synthetic: Boolean(source.synthetic),
+        citation_ids: source.citation_ids || (source.citation_id ? [source.citation_id] : []),
+        supporting_emails: source.supporting_emails || [],
         document_id: source.id
       }));
       const tableRows = evidenceNodes.flatMap(node => Object.entries(node.data || {})
@@ -313,8 +376,8 @@ class AIService {
       return {
         query,
         answer: data.answer || 'No matching graph facts were found.',
-        confidence: null,
-        pipeline_steps: [
+        confidence: data.confidence ?? null,
+        pipeline_steps: data.pipeline_steps || [
           { step: 1, name: 'Question Understanding', description: 'Prepared the question for graph retrieval.', detail: query },
           { step: 2, name: 'Graph Retrieval', description: 'Searched the Paper Trail graph.', detail: `${data.retrieval_count ?? links.length} matches; backend ${data.retrieval_backend || 'sqlite'}.` },
           { step: 3, name: 'Evidence Collection', description: 'Collected source documents from retrieved graph facts.', detail: `${citations.length} source documents.` },
@@ -323,9 +386,17 @@ class AIService {
         matched_entities: [],
         matched_facts: links,
         evidence_citations: citations,
-        graph: { nodes: evidenceNodes, edges: evidenceEdges },
+        graph: { nodes: evidenceNodes, edges: evidenceEdges, meta: {
+          retrieval_backend: data.retrieval_backend || 'sqlite+kg_agent',
+          reviewed_only: data.reviewed_only,
+          cited_nodes: sourceIds.size,
+          omitted_nodes: Math.max(0, candidateNodeIds.length - evidenceNodes.length),
+          omitted_edges: Math.max(0, candidateEdges.length - evidenceEdges.length)
+        } },
         table: tableRows,
         answer_mode: data.answer_mode,
+        model_name: data.model_name,
+        citations: data.citations || [],
         retrieval_backend: data.retrieval_backend,
         reviewed_only: data.reviewed_only
       };
@@ -405,13 +476,27 @@ class AIService {
 
   // --- REPOSITORY & API INTEGRATION METHODS ---
 
-  async getDocuments() {
+  async getDocuments(forceRefresh = false) {
+    if (this.documentsPromise) return this.documentsPromise;
+    if (!forceRefresh && this.documentsCache && Date.now() - this.documentsCacheAt < 10000) {
+      return this.documentsCache;
+    }
+    const request = (async () => {
+      try {
+        const res = await this.request('/documents');
+        const data = await res.json();
+        this.documents = Array.isArray(data) ? data.map(row => this.documentFromApi(row)) : [];
+        this.documentsCache = this.documents;
+        this.documentsCacheAt = Date.now();
+        return this.documentsCache;
+      } catch (_) { return this.documentsCache || []; }
+    })();
+    this.documentsPromise = request;
     try {
-      const res = await this.request('/documents');
-      const data = await res.json();
-      this.documents = Array.isArray(data) ? data.map(row => this.documentFromApi(row)) : [];
-      return this.documents;
-    } catch (_) { return []; }
+      return await request;
+    } finally {
+      if (this.documentsPromise === request) this.documentsPromise = null;
+    }
   }
 
   async getWatcherStatus() {
@@ -442,12 +527,17 @@ class AIService {
       document.status = extraction.completion_status === 'complete' ? 'Completed'
         : extraction.completion_status === 'needs_review' ? 'Needs Review' : document.status;
       document.pages = [{ page_number: 1, title: document.filename, text: evidenceText || 'OCR evidence is not available.' }];
-      try {
-        const image = await this.request(`/documents/${encodeURIComponent(docId)}/pages/1.png`);
-        document.image_url = URL.createObjectURL(await image.blob());
-      } catch (_) { document.image_url = ''; }
+      // Render scanned pages only when the user opens the image tab.
+      document.image_url = '';
       return document;
     } catch (_) { return this.documents.find(d => d.id === docId) || null; }
+  }
+
+  async getDocumentImage(docId, page = 1) {
+    const response = await this.request(
+      `/documents/${encodeURIComponent(docId)}/pages/${encodeURIComponent(page)}.png`
+    );
+    return URL.createObjectURL(await response.blob());
   }
 
   async uploadDemoDocument(demoType = "contract") {
@@ -577,8 +667,10 @@ class AIService {
   }
 
   async getKnowledgeGraph(forceRefresh = false) {
-    if (!forceRefresh && this.graphCache && Date.now() - this.graphCacheAt < 30000) return this.graphCache;
-    try {
+    if (!forceRefresh && this.graphCache && Date.now() - this.graphCacheAt < 60000) return this.graphCache;
+    if (this.graphPromise) return this.graphPromise;
+    const request = (async () => {
+      try {
       const res = await this.request('/graph');
       const graph = await res.json();
       const nodes = (graph.nodes || []).map(node => {
@@ -597,7 +689,16 @@ class AIService {
       this.graphCache = { nodes, edges, meta: { source: 'Paper Trail SQLite', node_count: nodes.length, edge_count: edges.length } };
       this.graphCacheAt = Date.now();
       return this.graphCache;
-    } catch (_) { return { nodes: [], edges: [], meta: { error: this.apiError || 'API unavailable' } }; }
+      } catch (_) {
+        return this.graphCache || { nodes: [], edges: [], meta: { error: this.apiError || 'API unavailable' } };
+      }
+    })();
+    this.graphPromise = request;
+    try {
+      return await request;
+    } finally {
+      if (this.graphPromise === request) this.graphPromise = null;
+    }
 
     // Dynamic client fallback graph layout
     const nodes = this.entities.slice(0, 24).map((e, idx) => ({
@@ -642,26 +743,47 @@ class AIService {
   }
 
   async getConversationThreads() {
-    const graph = await this.getKnowledgeGraph();
-    const emails = graph.nodes.filter(node => node.type === 'SyntheticEmail');
-    const summaries = graph.nodes.filter(node => node.type === 'ConversationSummary');
-    const invoices = graph.nodes.filter(node => node.type === 'Invoice');
-    const invoiceByNumber = new Map(invoices.map(node => [String(node.data?.invoice_number || node.label), node]));
-    const threads = new Map();
-    for (const email of emails) {
-      const number = String(email.data?.invoice_number || 'Unlinked invoice');
-      if (!threads.has(number)) threads.set(number, { invoiceNumber: number, emails: [], summary: null, invoice: invoiceByNumber.get(number) || null });
-      threads.get(number).emails.push(email);
+    if (this.conversationsCache && Date.now() - this.conversationsCacheAt < 10000) {
+      return this.conversationsCache;
     }
-    for (const summary of summaries) {
-      const number = String(summary.data?.invoice_number || '');
-      if (number && threads.has(number)) threads.get(number).summary = summary;
+    if (this.conversationsPromise) return this.conversationsPromise;
+    const request = this.request('/conversations').then(response => response.json())
+      .then(threads => {
+        this.conversationsCache = Array.isArray(threads) ? threads : [];
+        this.conversationsCacheAt = Date.now();
+        return this.conversationsCache;
+      }).catch(async () => {
+        if (this.conversationsCache) return this.conversationsCache;
+        // Keep compatibility with a backend process that predates /api/conversations.
+        const graph = await this.getKnowledgeGraph();
+        const emails = graph.nodes.filter(node => node.type === 'SyntheticEmail');
+        const summaries = graph.nodes.filter(node => node.type === 'ConversationSummary');
+        const invoices = graph.nodes.filter(node => node.type === 'Invoice');
+        const invoiceByNumber = new Map(invoices.map(node => [String(node.data?.invoice_number || node.label), node]));
+        const threads = new Map();
+        for (const email of emails) {
+          const number = String(email.data?.invoice_number || 'Unlinked invoice');
+          if (!threads.has(number)) threads.set(number, { invoiceNumber: number, emails: [], summary: null, invoice: invoiceByNumber.get(number) || null });
+          threads.get(number).emails.push(email);
+        }
+        for (const summary of summaries) {
+          const number = String(summary.data?.invoice_number || '');
+          if (number && threads.has(number)) threads.get(number).summary = summary;
+        }
+        this.conversationsCache = [...threads.values()].map(thread => {
+          thread.emails.sort((a, b) => Number(a.data?.thread_position || 0) - Number(b.data?.thread_position || 0));
+          const props = thread.summary?.data || thread.invoice?.data || thread.emails[0]?.data || {};
+          return { ...thread, vendor: props.vendor_name || props.vendor || 'Vendor not recorded', customer: props.customer_name || props.customer || 'Customer not recorded' };
+        }).sort((a, b) => a.invoiceNumber.localeCompare(b.invoiceNumber));
+        this.conversationsCacheAt = Date.now();
+        return this.conversationsCache;
+      });
+    this.conversationsPromise = request;
+    try {
+      return await request;
+    } finally {
+      if (this.conversationsPromise === request) this.conversationsPromise = null;
     }
-    return [...threads.values()].map(thread => {
-      thread.emails.sort((a, b) => Number(a.data?.thread_position || 0) - Number(b.data?.thread_position || 0));
-      const props = thread.summary?.data || thread.invoice?.data || thread.emails[0]?.data || {};
-      return { ...thread, vendor: props.vendor_name || props.vendor || 'Vendor not recorded', customer: props.customer_name || props.customer || 'Customer not recorded' };
-    }).sort((a, b) => a.invoiceNumber.localeCompare(b.invoiceNumber));
   }
 
   async getReviewItems() {
@@ -732,9 +854,26 @@ class AIService {
   }
 
   async getAnalytics({ refresh = false } = {}) {
-    if (refresh) this.graphCache = null;
+    if (!refresh && this.analyticsCache && Date.now() - this.analyticsCacheAt < 10000) {
+      return this.analyticsCache;
+    }
+    if (this.analyticsPromise) return this.analyticsPromise;
+    const request = this.request('/analytics').then(response => response.json()).catch(() => null);
+    this.analyticsPromise = request;
+    let serverAnalytics;
+    try {
+      serverAnalytics = await request;
+    } finally {
+      if (this.analyticsPromise === request) this.analyticsPromise = null;
+    }
+    if (serverAnalytics) {
+      this.analyticsCache = serverAnalytics;
+      this.analyticsCacheAt = Date.now();
+      return serverAnalytics;
+    }
+    if (this.analyticsCache) return this.analyticsCache;
     const [documents, entities, relationships, facts, reviews] = await Promise.all([
-      this.getDocuments(), this.getEntities(), this.getRelationships(), this.getFacts(), this.getReviewItems()
+      this.getDocuments(refresh), this.getEntities(), this.getRelationships(), this.getFacts(), this.getReviewItems()
     ]);
     const totalDocs = documents.length;
     const totalEnts = entities.length;

@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "dataset": "fictional presenter invoices; deterministic graph answers only",
+  "cases": [
+    {
+      "id": "pair-001-003",
+      "question": "Why are invoice DEMO-2026-001 and invoice DEMO-2026-003 connected?",
+      "expected_links": ["SAME_ITEM_DESCRIPTION_AS", "SAME_VENDOR_AS"],
+      "answer_contains": ["Wireless barcode scanner", "Northstar Office Supply"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-001-004",
+      "question": "Why are invoice DEMO-2026-001 and invoice DEMO-2026-004 connected?",
+      "expected_links": ["SAME_CUSTOMER_AS"],
+      "answer_contains": ["Willow Analytics"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-001-005",
+      "question": "Why are invoice DEMO-2026-001 and invoice DEMO-2026-005 connected?",
+      "expected_links": ["SAME_ITEM_DESCRIPTION_AS", "SAME_VENDOR_AS"],
+      "answer_contains": ["Wireless barcode scanner", "Northstar Office Supply"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-001-008",
+      "question": "Why are invoice DEMO-2026-001 and invoice DEMO-2026-008 connected?",
+      "expected_links": ["SAME_CUSTOMER_AS", "SAME_VENDOR_AS"],
+      "answer_contains": ["Willow Analytics", "Northstar Office Supply"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-002-005",
+      "question": "Why are invoice DEMO-2026-002 and invoice DEMO-2026-005 connected?",
+      "expected_links": ["SAME_CUSTOMER_AS"],
+      "answer_contains": ["Blue Peak Studio"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-002-006",
+      "question": "Why are invoice DEMO-2026-002 and invoice DEMO-2026-006 connected?",
+      "expected_links": ["SAME_ITEM_DESCRIPTION_AS", "SAME_VENDOR_AS"],
+      "answer_contains": ["USB-C docking station", "Maple Tech"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-002-010-reviewed-default",
+      "question": "Why are invoice DEMO-2026-002 and invoice DEMO-2026-010 connected?",
+      "expected_links": [],
+      "answer_contains": ["No reviewed invoice-to-invoice connection", "Excluded 1 unreviewed invoice"],
+      "excluded_unreviewed": 1
+    },
+    {
+      "id": "pair-003-005",
+      "question": "Why are invoice DEMO-2026-003 and invoice DEMO-2026-005 connected?",
+      "expected_links": ["SAME_ITEM_DESCRIPTION_AS", "SAME_VENDOR_AS"],
+      "answer_contains": ["Wireless barcode scanner", "Northstar Office Supply"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-003-006",
+      "question": "Why are invoice DEMO-2026-003 and invoice DEMO-2026-006 connected?",
+      "expected_links": ["SAME_CUSTOMER_AS"],
+      "answer_contains": ["Riverbend School"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-003-007",
+      "question": "Why are invoice DEMO-2026-003 and invoice DEMO-2026-007 connected?",
+      "expected_links": ["SAME_CUSTOMER_AS"],
+      "answer_contains": ["Riverbend School"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-004-007",
+      "question": "Why are invoice DEMO-2026-004 and invoice DEMO-2026-007 connected?",
+      "expected_links": ["SAME_ITEM_DESCRIPTION_AS", "SAME_VENDOR_AS"],
+      "answer_contains": ["Recycled A4 paper carton", "Cedar Books"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-004-008",
+      "question": "Why are invoice DEMO-2026-004 and invoice DEMO-2026-008 connected?",
+      "expected_links": ["SAME_CUSTOMER_AS"],
+      "answer_contains": ["Willow Analytics"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-004-010-reviewed-default",
+      "question": "Why are invoice DEMO-2026-004 and invoice DEMO-2026-010 connected?",
+      "expected_links": [],
+      "answer_contains": ["No reviewed invoice-to-invoice connection", "Excluded 1 unreviewed invoice"],
+      "excluded_unreviewed": 1
+    },
+    {
+      "id": "pair-005-009",
+      "question": "Why are invoice DEMO-2026-005 and invoice DEMO-2026-009 connected?",
+      "expected_links": ["SAME_CUSTOMER_AS"],
+      "answer_contains": ["Blue Peak Studio"],
+      "excluded_unreviewed": 0
+    },
+    {
+      "id": "pair-008-009",
+      "question": "Why are invoice DEMO-2026-008 and invoice DEMO-2026-009 connected?",
+      "expected_links": ["SAME_ITEM_DESCRIPTION_AS"],
+      "answer_contains": ["Thermal label roll, 100 mm"],
+      "excluded_unreviewed": 0
+    }
+  ]
+}

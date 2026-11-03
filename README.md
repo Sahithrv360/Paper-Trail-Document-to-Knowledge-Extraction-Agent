@@ -175,7 +175,7 @@ python -m backend.app.extract_one backend/tests/fixtures/invoice-242.jpg --provi
 python -m backend.app.review.server
 ```
 
-The review server binds to `127.0.0.1`; keep its one-time link private. Copy `.env.example` to `.env` to configure limits and providers. Queue-only remains the default. For labeled evaluation, use `backend.app.extraction.benchmark` and the validation split first; reserve the test split for a frozen, one-time final run. See [`docs/EVALUATION.md`](./docs/EVALUATION.md) and [`docs/DATA_HANDLING.md`](./docs/DATA_HANDLING.md). No accuracy improvement is established until that evaluation runs.
+The review server binds to `127.0.0.1` and serves the React app from `frontend/dist` at its printed link. It rebuilds the frontend automatically when source files are newer; the older built-in reviewer is used only if npm or the frontend build is unavailable. Keep the one-time link private. Copy `.env.example` to `.env` to configure limits and providers. Queue-only remains the default. For labeled evaluation, use `backend.app.extraction.benchmark` and the validation split first; reserve the test split for a frozen, one-time final run. See [`docs/EVALUATION.md`](./docs/EVALUATION.md) and [`docs/DATA_HANDLING.md`](./docs/DATA_HANDLING.md). No accuracy improvement is established until that evaluation runs.
 
 ### Neo4j graph view and Graph RAG
 
@@ -214,6 +214,14 @@ python -m backend.app.evaluate_graph_rag
 The scorer defaults to `presentation_data/runtime/paper_trail_graph.sqlite3`; it does not touch the live graph. Its 15/15 result checks deterministic answers on synthetic records only and is not an invoice extraction accuracy result.
 
 For local graph chat through Ollama, install a model you want to use, then set `GRAPH_RAG_BACKEND=ollama`, `GRAPH_RAG_MODEL=<installed-model-name>`, and `OLLAMA_HOST=http://127.0.0.1:11434`. Select **Use configured model** in the chat panel. Calls stay on loopback, are capped at 10 per hour, and repeat questions use the cache. The model cannot write to the graph.
+
+On **Ask Knowledge**, choose **Agent · plan, retrieve, verify** to run the agent workflow against the live SQLite graph projection. It plans the query, selects keyword and graph retrieval, fuses and reranks evidence, builds a cited evidence packet, generates an answer, verifies support, and records a trace under `runs/agentic_rag/`. The agent defaults to local Ollama using `GRAPH_RAG_MODEL` and `OLLAMA_HOST`. To use OpenRouter instead, set `AGENT_LLM_PROVIDER=openrouter`, add `OPENROUTER_API_KEY` to the ignored `.env` file, and set `OPENROUTER_MODEL=qwen/qwen3.8-flash` (or another supported model ID). OpenRouter receives the retrieved graph evidence and question, so enable it only when that data may leave this computer. **Standard graph retrieval** remains available as the existing deterministic path. The agent reads reviewed evidence by default, plus clearly labeled synthetic email demo records; it does not write to SQLite or Neo4j. The answer graph is limited to retrieved evidence and connected records, outlines cited source nodes, and lets you inspect node facts and relationship direction.
+
+Ask Knowledge builds clickable sample questions from the entities currently in the graph. Query examples for lookup, account summaries, relationships, email analysis, comparisons, aggregation, review risks, and follow-ups are in `docs/agent_query_examples.md`.
+
+For local Ollama agent answers, set `AGENT_LLM_PROVIDER=ollama`, `GRAPH_RAG_MODEL=qwen2.5:3b-instruct`, and `OLLAMA_HOST=http://127.0.0.1:11434`. Qwen 3 may spend time in its separate thinking channel and return no answer text through the current client.
+
+Agent turns are appended locally to `runs/agent_conversations.jsonl`, including the question, recent chat context, answer, citations, and conversation ID. This path is ignored by Git and can be changed with `PAPERTRAIL_CONVERSATION_LOG` in `.env`.
 
 To use Anthropic instead, configure `GRAPH_RAG_API_KEY` and `GRAPH_RAG_MODEL`, set `GRAPH_RAG_BACKEND=anthropic`, and explicitly set `PAPERTRAIL_ALLOW_GRAPH_RAG_REMOTE=I_ACCEPT_GRAPH_DATA_LEAVES_THIS_DEVICE`. Only retrieved graph facts are sent to the hosted API. Hosted generation remains off by default.
 

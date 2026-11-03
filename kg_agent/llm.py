@@ -69,7 +69,8 @@ class OpenAICompatibleModel:
 
     def complete(self, messages: list[dict[str, str]], *, json_mode: bool = False,
                  response_model: type[BaseModel] | None = None) -> str:
-        request: dict[str, Any] = {"model": self.config.llm_model, "messages": messages}
+        request: dict[str, Any] = {"model": self.config.llm_model, "messages": messages,
+                                   "max_tokens": self.config.max_output_tokens}
         if json_mode or response_model is not None:
             request["response_format"] = {"type": "json_object"}
         active_messages = list(messages)

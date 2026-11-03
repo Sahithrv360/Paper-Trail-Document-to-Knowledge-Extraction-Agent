@@ -1,5 +1,7 @@
 """Deterministic citation and evidence checks with an optional judge hook."""
 
+import re
+
 from kg_agent.models import (AnswerDraft, BuiltContext, VerificationResult)
 
 
@@ -22,10 +24,13 @@ class AnswerVerifier:
         for sub_question in sub_questions or []:
             if any(item.evidence.id.startswith("aggregate:") for item in context.items):
                 continue
-            tokens = {token.casefold() for token in sub_question.question.split()
+            # Normalize punctuation on both sides so names such as
+            # "Wells-Carlson." still match the graph's "Wells-Carlson)" form.
+            tokens = {token for token in re.findall(r"[\w]+", sub_question.question.casefold())
                       if len(token) > 3}
-            if tokens and not any(tokens & {word.casefold() for word in item.evidence.text.split()}
-                                  for item in context.items):
+            evidence_tokens = {token for item in context.items
+                               for token in re.findall(r"[\w]+", item.evidence.text.casefold())}
+            if tokens and not tokens.intersection(evidence_tokens):
                 unresolved.append(sub_question.question)
         if unresolved:
             issues.append("Unanswered sub-questions: " + "; ".join(unresolved))

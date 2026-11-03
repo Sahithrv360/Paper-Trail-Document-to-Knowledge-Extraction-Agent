@@ -1,0 +1,40 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-008",
+  "source_file": "DEMO-2026-008.json",
+  "record": {
+    "invoice_number": "DEMO-2026-008",
+    "invoice_date": "2026-10-08",
+    "currency": "USD",
+    "vendor": {
+      "name": "Northstar Office Supply",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Willow Analytics",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 50,
+    "tax_amount": 5,
+    "total_amount": 55,
+    "items": [
+      {
+        "description": "Thermal label roll, 100 mm",
+        "quantity": 2,
+        "unit_price": 25,
+        "net_amount": 50,
+        "tax_rate_percent": 10,
+        "vat_amount": 5,
+        "gross_amount": 55
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}

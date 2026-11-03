@@ -19,6 +19,7 @@ class AgentConfig(BaseModel):
     embedding_fallback_model: str = "BAAI/bge-small-en-v1.5"
     request_timeout_seconds: float = Field(default=60, gt=0, le=600)
     max_retries: int = Field(default=1, ge=0, le=3)
+    max_output_tokens: int = Field(default=1024, gt=0, le=8192)
 
     @classmethod
     def load(cls, config_path: Path | None = None, env_path: Path | None = None):
@@ -53,6 +54,7 @@ class AgentConfig(BaseModel):
             "embedding_fallback_model": "EMBEDDING_FALLBACK_MODEL",
             "request_timeout_seconds": "REQUEST_TIMEOUT_SECONDS",
             "max_retries": "MAX_RETRIES",
+            "max_output_tokens": "MAX_OUTPUT_TOKENS",
         }
         for field, name in env_names.items():
             if name in os.environ:

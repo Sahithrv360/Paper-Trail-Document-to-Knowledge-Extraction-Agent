@@ -27,6 +27,7 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 outputs/
+runs/
 logs/
 reports/
 paper_trail.sqlite3

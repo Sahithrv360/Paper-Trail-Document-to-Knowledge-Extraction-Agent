@@ -1,0 +1,40 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-009",
+  "source_file": "DEMO-2026-009.json",
+  "record": {
+    "invoice_number": "DEMO-2026-009",
+    "invoice_date": "2026-10-09",
+    "currency": "USD",
+    "vendor": {
+      "name": "Harbor Logistics",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Blue Peak Studio",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 25,
+    "tax_amount": 2.5,
+    "total_amount": 27.5,
+    "items": [
+      {
+        "description": "Thermal label roll, 100 mm",
+        "quantity": 1,
+        "unit_price": 25,
+        "net_amount": 25,
+        "tax_rate_percent": 10,
+        "vat_amount": 2.5,
+        "gross_amount": 27.5
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}

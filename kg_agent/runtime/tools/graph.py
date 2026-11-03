@@ -75,7 +75,7 @@ def deterministic_aggregation(store, question: str) -> list[Evidence]:
     if not entity_type:
         return []
     nodes = [node for node in store.all_nodes() if node.type == entity_type]
-    if "sum" in lower or "total" in lower:
+    if re.search(r"\b(sum|total)\b", lower):
         property_name = ("contract_value" if entity_type == "Contract" else
                          "total" if entity_type == "Invoice" else None)
         if not property_name:
@@ -88,7 +88,7 @@ def deterministic_aggregation(store, question: str) -> list[Evidence]:
         total = sum(value for _, value in values)
         detail = f"Sum of {property_name} for {entity_type}: {total} USD across {len(values)} records."
         nodes = [node for node, _ in values]
-    elif "how many" in lower or "count" in lower or "number of" in lower:
+    elif re.search(r"\b(how many|count|number of)\b", lower):
         detail = f"Count of {entity_type}: {len(nodes)} records."
     else:
         return []

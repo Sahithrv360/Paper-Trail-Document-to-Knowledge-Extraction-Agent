@@ -1,0 +1,49 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-010",
+  "source_file": "DEMO-2026-010.json",
+  "record": {
+    "invoice_number": "DEMO-2026-010",
+    "invoice_date": "2026-10-10",
+    "currency": "USD",
+    "vendor": {
+      "name": "Maple Tech",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Willow Analytics",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 135,
+    "tax_amount": 13.5,
+    "total_amount": 148.5,
+    "items": [
+      {
+        "description": "USB-C docking station",
+        "quantity": 1,
+        "unit_price": 120,
+        "net_amount": 120,
+        "tax_rate_percent": 10,
+        "vat_amount": 12,
+        "gross_amount": 132
+      },
+      {
+        "description": "Recycled A4 paper carton",
+        "quantity": 1,
+        "unit_price": 15,
+        "net_amount": 15,
+        "tax_rate_percent": 10,
+        "vat_amount": 1.5,
+        "gross_amount": 16.5
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}

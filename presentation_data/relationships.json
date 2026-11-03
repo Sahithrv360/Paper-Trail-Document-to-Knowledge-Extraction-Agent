@@ -1,0 +1,64 @@
+{
+  "title": "Paper Trail presenter dataset",
+  "synthetic_only": true,
+  "purpose": "Ten fictional invoice records for demonstrating invoice-to-invoice graph relationships.",
+  "note": "These JSON examples are not OCR image files and are not wired into the production watched folder or database.",
+  "relationship_groups": {
+    "SAME_VENDOR_AS": {
+      "Northstar Office Supply": [
+        "DEMO-2026-001",
+        "DEMO-2026-003",
+        "DEMO-2026-005",
+        "DEMO-2026-008"
+      ],
+      "Maple Tech": [
+        "DEMO-2026-002",
+        "DEMO-2026-006",
+        "DEMO-2026-010"
+      ],
+      "Cedar Books": [
+        "DEMO-2026-004",
+        "DEMO-2026-007"
+      ]
+    },
+    "SAME_CUSTOMER_AS": {
+      "Willow Analytics": [
+        "DEMO-2026-001",
+        "DEMO-2026-004",
+        "DEMO-2026-008",
+        "DEMO-2026-010"
+      ],
+      "Blue Peak Studio": [
+        "DEMO-2026-002",
+        "DEMO-2026-005",
+        "DEMO-2026-009"
+      ],
+      "Riverbend School": [
+        "DEMO-2026-003",
+        "DEMO-2026-006",
+        "DEMO-2026-007"
+      ]
+    },
+    "SAME_ITEM_DESCRIPTION_AS": {
+      "Wireless barcode scanner": [
+        "DEMO-2026-001",
+        "DEMO-2026-003",
+        "DEMO-2026-005"
+      ],
+      "USB-C docking station": [
+        "DEMO-2026-002",
+        "DEMO-2026-006",
+        "DEMO-2026-010"
+      ],
+      "Recycled A4 paper carton": [
+        "DEMO-2026-004",
+        "DEMO-2026-007",
+        "DEMO-2026-010"
+      ],
+      "Thermal label roll, 100 mm": [
+        "DEMO-2026-008",
+        "DEMO-2026-009"
+      ]
+    }
+  }
+}

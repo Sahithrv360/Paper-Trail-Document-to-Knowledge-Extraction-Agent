@@ -1,0 +1,40 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-005",
+  "source_file": "DEMO-2026-005.json",
+  "record": {
+    "invoice_number": "DEMO-2026-005",
+    "invoice_date": "2026-10-05",
+    "currency": "USD",
+    "vendor": {
+      "name": "NorthStar Office Supply",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Blue Peak Studio",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 240,
+    "tax_amount": 24,
+    "total_amount": 264,
+    "items": [
+      {
+        "description": "Wireless barcode scanner",
+        "quantity": 3,
+        "unit_price": 80,
+        "net_amount": 240,
+        "tax_rate_percent": 10,
+        "vat_amount": 24,
+        "gross_amount": 264
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}

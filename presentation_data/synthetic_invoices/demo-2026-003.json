@@ -1,0 +1,40 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-003",
+  "source_file": "DEMO-2026-003.json",
+  "record": {
+    "invoice_number": "DEMO-2026-003",
+    "invoice_date": "2026-10-03",
+    "currency": "USD",
+    "vendor": {
+      "name": "Northstar Office Supply",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Riverbend School",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 80,
+    "tax_amount": 8,
+    "total_amount": 88,
+    "items": [
+      {
+        "description": "Wireless barcode scanner",
+        "quantity": 1,
+        "unit_price": 80,
+        "net_amount": 80,
+        "tax_rate_percent": 10,
+        "vat_amount": 8,
+        "gross_amount": 88
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}

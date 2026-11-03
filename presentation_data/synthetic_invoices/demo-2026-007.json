@@ -1,0 +1,40 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-007",
+  "source_file": "DEMO-2026-007.json",
+  "record": {
+    "invoice_number": "DEMO-2026-007",
+    "invoice_date": "2026-10-07",
+    "currency": "USD",
+    "vendor": {
+      "name": "Cedar Books",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Riverbend School",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 30,
+    "tax_amount": 3,
+    "total_amount": 33,
+    "items": [
+      {
+        "description": "Recycled A4 paper carton",
+        "quantity": 2,
+        "unit_price": 15,
+        "net_amount": 30,
+        "tax_rate_percent": 10,
+        "vat_amount": 3,
+        "gross_amount": 33
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}

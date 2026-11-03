@@ -95,6 +95,7 @@ class Evidence(BaseModel):
     node_ids: list[str] = Field(default_factory=list)
     edge_ids: list[str] = Field(default_factory=list)
     chunk_ids: list[str] = Field(default_factory=list)
+    citation_id: str | None = None
 
 
 class EntityCandidate(BaseModel):
@@ -147,6 +148,7 @@ class BuiltContext(BaseModel):
     items: list[ContextItem] = Field(default_factory=list)
     text: str = ""
     token_estimate: int = 0
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AnswerDraft(BaseModel):

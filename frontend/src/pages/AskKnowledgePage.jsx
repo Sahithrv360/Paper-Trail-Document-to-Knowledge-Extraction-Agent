@@ -8,7 +8,20 @@ import ConfidenceBadge from '../components/common/ConfidenceBadge';
 import EntityBadge from '../components/common/EntityBadge';
 import { aiService } from '../services/aiService';
 
-// --- INTERACTIVE NEO4J-STYLE SUBGRAPH COMPONENT ---
+function renderAnswerInline(text, keyPrefix) {
+  return String(text).split(/(\*\*[^*]+\*\*|\[(?:N|C|T|P|S)\d+\])/g).filter(Boolean).map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={`${keyPrefix}-${index}`}>{part.slice(2, -2)}</strong>;
+    }
+    if (/^\[(?:N|C|T|P|S)\d+\]$/.test(part)) {
+      return <span key={`${keyPrefix}-${index}`} className="badge badge-blue"
+        style={{ margin: '0 2px', fontSize: '0.68rem', verticalAlign: 'middle' }}>{part.slice(1, -1)}</span>;
+    }
+    return part;
+  });
+}
+
+// --- EVIDENCE SUBGRAPH COMPONENT ---
 function InteractiveSubgraph({ graphData }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -19,6 +32,13 @@ function InteractiveSubgraph({ graphData }) {
 
   const rawNodes = graphData?.nodes || [];
   const rawEdges = graphData?.edges || [];
+  const nodeById = new Map(rawNodes.map(node => [node.id, node]));
+  const detailProperties = Object.entries(selectedNode?.data || selectedNode?.properties || {})
+    .filter(([key, value]) => !['summary_text', 'chunk_text', 'body', 'synthetic_notice'].includes(key)
+      && value !== null && value !== undefined && ['string', 'number', 'boolean'].includes(typeof value))
+    .slice(0, 7);
+  const selectedRelationships = selectedNode ? rawEdges.filter(edge =>
+    edge.source === selectedNode.id || edge.target === selectedNode.id).slice(0, 6) : [];
 
   // Internal simulation and camera refs
   const nodesRef = useRef([]);
@@ -33,38 +53,44 @@ function InteractiveSubgraph({ graphData }) {
     if (!rawNodes || rawNodes.length === 0) return;
 
     const width = 850;
-    const height = 450;
+    const height = 520;
     const cx = width / 2;
     const cy = height / 2;
 
     const typeColors = {
       Organization: '#2563eb',
+      Company: '#2563eb',
+      Customer: '#7c3aed',
+      Vendor: '#0f766e',
+      Supplier: '#0f766e',
       Product: '#10b981',
+      LineItem: '#16a34a',
       Invoice: '#06b6d4',
+      SyntheticEmail: '#0f9f9a',
+      ConversationSummary: '#c24178',
+      Document: '#64748b',
       Money: '#14b8a6',
       Date: '#64748b',
       Issue: '#ef4444'
     };
 
-    // Calculate node connections to detect hub nodes (like Client or Vendor)
+    // Keep invoice, customer, and vendor records in distinct columns so the
+    // evidence path reads left to right instead of collapsing into a circle.
     const outDegree = {};
-    const inDegree = {};
     rawEdges.forEach(e => {
       outDegree[e.source] = (outDegree[e.source] || 0) + 1;
-      inDegree[e.target] = (inDegree[e.target] || 0) + 1;
     });
-
-    // Identify primary source hubs (e.g. Client or Vendor)
-    const simNodes = rawNodes.map((n, idx) => {
-      const isHub = (outDegree[n.id] || 0) > 1 || (outDegree[n.label] || 0) > 1 || n.type === 'Organization';
-      const radius = isHub ? 34 : 28;
+    const simNodes = rawNodes.map((n) => {
+      const isParty = ['Organization', 'Company', 'Customer', 'Vendor', 'Supplier'].includes(n.type);
+      const isInvoice = n.type === 'Invoice';
+      const radius = isParty || isInvoice ? 35 : 29;
       const color = n.color || typeColors[n.type] || '#8b5cf6';
 
       return {
         ...n,
         color,
         radius,
-        isHub,
+        isHub: isParty || isInvoice || (outDegree[n.id] || 0) > 1,
         x: cx,
         y: cy,
         vx: 0,
@@ -72,42 +98,27 @@ function InteractiveSubgraph({ graphData }) {
       };
     });
 
-    // Node positioning layout
-    const hubs = simNodes.filter(n => n.isHub);
-    const nonHubs = simNodes.filter(n => !n.isHub);
-
-    if (hubs.length === 1 && nonHubs.length > 0) {
-      // Star topology around 1 central hub node
-      hubs[0].x = cx - 140;
-      hubs[0].y = cy;
-      const R = 210;
-      const arcSpan = Math.PI * 1.3;
-      const startAngle = -arcSpan / 2;
-      nonHubs.forEach((nh, i) => {
-        const angle = nonHubs.length === 1 ? 0 : startAngle + (arcSpan * i) / (nonHubs.length - 1);
-        nh.x = cx + Math.cos(angle) * R + 60;
-        nh.y = cy + Math.sin(angle) * (R * 0.9);
-      });
-    } else if (hubs.length > 1 && nonHubs.length > 0) {
-      // Bipartite topology: Hubs on left column, targets on right column
-      const hubStep = height / (hubs.length + 1);
-      hubs.forEach((h, i) => {
-        h.x = cx - 220;
-        h.y = hubStep * (i + 1);
-      });
-      const targetStep = height / (nonHubs.length + 1);
-      nonHubs.forEach((nh, i) => {
-        nh.x = cx + 180;
-        nh.y = targetStep * (i + 1);
-      });
+    const customers = simNodes.filter(n => ['Customer', 'Organization', 'Company'].includes(n.type));
+    const invoices = simNodes.filter(n => n.type === 'Invoice');
+    const vendors = simNodes.filter(n => ['Vendor', 'Supplier'].includes(n.type));
+    const attached = simNodes.filter(n => !customers.includes(n) && !invoices.includes(n) && !vendors.includes(n));
+    const placeColumn = (group, x) => group.forEach((node, index) => {
+      node.x = x;
+      node.y = 70 + ((height - 140) * (index + 1)) / (group.length + 1);
+    });
+    if (invoices.length) {
+      placeColumn(vendors, 125);
+      placeColumn(invoices, cx);
+      placeColumn(customers, 725);
+      placeColumn(attached, vendors.length || customers.length ? 560 : 725);
     } else {
-      // Circular layout
-      const R = Math.max(160, simNodes.length * 36);
-      simNodes.forEach((n, i) => {
-        const angle = (2 * Math.PI * i) / simNodes.length;
-        n.x = cx + Math.cos(angle) * R;
-        n.y = cy + Math.sin(angle) * (R * 0.7);
-      });
+      const degreeOrder = [...simNodes].sort((a, b) =>
+        (outDegree[b.id] || 0) - (outDegree[a.id] || 0));
+      const hubs = degreeOrder.filter(node => node.isHub);
+      const leaves = degreeOrder.filter(node => !node.isHub);
+      placeColumn(hubs, 280);
+      placeColumn(leaves, 650);
+      if (!hubs.length) placeColumn(degreeOrder, cx);
     }
 
     // Resolve edge endpoints by id or label
@@ -244,11 +255,22 @@ function InteractiveSubgraph({ graphData }) {
       ctx.fillText(labelText, mx, my);
     }
 
-    // 2. Draw Circular Nodes (Neo4j Style)
+    // 2. Draw graph nodes with a distinct visual treatment for cited evidence.
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
       const isSelected = selectedNode?.id === n.id;
       const isHovered = hoveredNode?.id === n.id;
+
+      // Cited source nodes have a persistent teal ring; selection adds a blue halo.
+      if (n.isEvidenceSource) {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius + 3, 0, Math.PI * 2);
+        ctx.strokeStyle = '#0f766e';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
 
       // Outer Highlight Ring
       if (isSelected || isHovered) {
@@ -326,8 +348,8 @@ function InteractiveSubgraph({ graphData }) {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
 
     const width = canvas.width;
     const height = canvas.height;
@@ -428,7 +450,7 @@ function InteractiveSubgraph({ graphData }) {
   };
 
   const handleReset = () => {
-    cameraRef.current = { x: 425, y: 225, zoom: 1 };
+    cameraRef.current = { x: 425, y: 260, zoom: 1 };
     setZoomLevel(1);
     setSelectedNode(null);
     render();
@@ -458,7 +480,8 @@ function InteractiveSubgraph({ graphData }) {
         border: '1px solid #cbd5e1',
         overflow: 'hidden',
         boxShadow: '0 4px 14px rgba(0,0,0,0.06)',
-        backgroundColor: '#f8fafc'
+        backgroundColor: '#f8fafc',
+        ...(isFullscreen ? { position: 'fixed', inset: '12px', zIndex: 1000, height: 'calc(100vh - 24px)' } : {})
       }}
     >
       {/* Graph Toolbar Header */}
@@ -474,7 +497,7 @@ function InteractiveSubgraph({ graphData }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Network size={16} color="#2563eb" />
           <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#0f172a' }}>
-            Interactive Neo4j Knowledge Subgraph
+            Retrieved evidence subgraph
           </span>
           <span className="badge badge-blue" style={{ fontSize: '0.7rem' }}>
             {rawNodes.length} Nodes • {rawEdges.length} Relations
@@ -485,18 +508,10 @@ function InteractiveSubgraph({ graphData }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {/* Node Legend */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: '8px', fontSize: '0.725rem', fontWeight: 600 }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#2563eb' }} /> Organization
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#10b981' }} /> Product
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#06b6d4' }} /> Invoice
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#ef4444' }} /> Issue
-            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#7c3aed' }} /> Customer</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#0f766e' }} /> Vendor</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#06b6d4' }} /> Invoice</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ width: '12px', height: '8px', border: '1px dashed #0f766e', borderRadius: '50%' }} /> Cited</span>
           </div>
 
           <button 
@@ -523,15 +538,19 @@ function InteractiveSubgraph({ graphData }) {
           >
             <RotateCcw size={14} />
           </button>
+          <button className="btn btn-outline btn-sm" onClick={() => setIsFullscreen(value => !value)}
+            title={isFullscreen ? 'Exit full screen' : 'Expand graph'} style={{ padding: '4px 8px' }}>
+            {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
         </div>
       </div>
 
       {/* Main Graph Canvas */}
-      <div style={{ position: 'relative', width: '100%', height: '420px', cursor: hoveredNode ? 'grab' : isDraggingRef.current ? 'grabbing' : 'default' }}>
+      <div style={{ position: 'relative', width: '100%', height: isFullscreen ? 'calc(100vh - 84px)' : '520px', cursor: hoveredNode ? 'grab' : isDraggingRef.current ? 'grabbing' : 'default' }}>
         <canvas
           ref={canvasRef}
           width={850}
-          height={420}
+          height={520}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -571,18 +590,31 @@ function InteractiveSubgraph({ graphData }) {
             <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#0f172a' }}>
               {selectedNode.label}
             </div>
-            {selectedNode.properties && Object.keys(selectedNode.properties).length > 0 && (
+            {detailProperties.length > 0 && (
               <div style={{ fontSize: '0.75rem', color: '#475569', display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '4px', borderTop: '1px solid #f1f5f9', paddingTop: '4px' }}>
-                {Object.entries(selectedNode.properties).map(([k, v]) => (
+                {detailProperties.map(([k, v]) => (
                   <div key={k} style={{ display: 'flex', justifyContent: 'space-between' }}>
                     <span style={{ fontWeight: 600, color: '#64748b' }}>{k}:</span>
-                    <span style={{ fontWeight: 700, color: '#1e3a8a' }}>{String(v)}</span>
+                    <span style={{ fontWeight: 700, color: '#1e3a8a', textAlign: 'right', maxWidth: '210px', overflowWrap: 'anywhere' }}>
+                      {String(v).length > 110 ? `${String(v).slice(0, 107)}…` : String(v)}
+                    </span>
                   </div>
                 ))}
               </div>
             )}
+            {selectedRelationships.length > 0 && <div style={{ marginTop: '4px', borderTop: '1px solid #f1f5f9', paddingTop: '5px' }}>
+              <div style={{ fontSize: '0.68rem', fontWeight: 800, color: '#475569', marginBottom: '3px' }}>CONNECTED RECORDS</div>
+              {selectedRelationships.map(edge => {
+                const otherId = edge.source === selectedNode.id ? edge.target : edge.source;
+                const other = nodeById.get(otherId);
+                const direction = edge.source === selectedNode.id ? '→' : '←';
+                return <div key={edge.id} style={{ fontSize: '0.7rem', color: '#334155', marginTop: '3px' }}>
+                  {direction} <b>{edge.label || edge.type}</b> {direction} {other?.label || otherId}
+                </div>;
+              })}
+            </div>}
             <div style={{ fontSize: '0.675rem', color: '#059669', fontWeight: 600, marginTop: '2px' }}>
-              ✓ Verified in Neo4j Knowledge Graph
+              {selectedNode.isEvidenceSource ? 'Cited as answer evidence' : 'Connected graph context'}
             </div>
           </div>
         )}
@@ -608,32 +640,161 @@ function InteractiveSubgraph({ graphData }) {
 }
 
 // --- MAIN ASK KNOWLEDGE PAGE COMPONENT ---
+function AgentRunProgress({ progress }) {
+  const stages = [
+    ['query_transform', 'Understand and plan'],
+    ['retrieval', 'Retrieve graph evidence'],
+    ['rank_fusion', 'Combine retrieval results'],
+    ['evidence_reranking', 'Rerank evidence'],
+    ['evidence_packet', 'Build cited evidence packet'],
+    ['answer_generation', 'Generate answer'],
+    ['answer_verification', 'Verify answer support']
+  ];
+  const events = progress?.events || [];
+  const currentIndex = stages.findIndex(([key]) => key === progress?.stage);
+  const lastEvent = (key) => [...events].reverse().find(event => event.stage === key)?.event;
+  const detailFor = (key) => {
+    const event = lastEvent(key);
+    if (!event) return '';
+    if (key === 'query_transform') return `Intent: ${event.intent || 'classified'} · Tools: ${(event.tools || []).join(', ') || 'selected'}`;
+    if (key === 'retrieval') return `${event.evidence_candidates ?? 0} candidate facts · ${event.tools?.join(', ') || 'retrieval tools'}`;
+    if (key === 'rank_fusion') return `${event.candidate_count ?? 0} candidates combined`;
+    if (key === 'evidence_reranking') return `${event.evidence_count ?? 0} evidence items retained`;
+    if (key === 'evidence_packet') return `${event.evidence_count ?? 0} cited items · about ${event.token_estimate ?? 0} tokens`;
+    if (key === 'answer_generation') return `Citations: ${event.citations?.length ?? 0} · confidence ${Math.round((event.confidence || 0) * 100)}%`;
+    if (key === 'answer_verification') return `${event.supported ? 'Supported' : 'Checking support'} · ${event.complete ? 'complete' : 'may need more evidence'}`;
+    return '';
+  };
+
+  return (
+    <section aria-live="polite" className="card" style={{ padding: '18px 22px', border: '1px solid #bfdbfe', background: '#f8fbff' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '12px' }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#0f172a' }}>Agent run status</h3>
+          <div style={{ marginTop: '3px', color: '#64748b', fontSize: '0.78rem' }}>
+            Live stages reported by the backend · {progress?.request_id ? `Run ${progress.request_id.slice(0, 8)}` : 'Starting request'}
+          </div>
+        </div>
+        <span style={{ color: '#2563eb', fontSize: '0.78rem', fontWeight: 700 }}>
+          {progress?.stage === 'completed' ? 'Complete' : 'In progress'}
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '9px' }}>
+        {stages.map(([key, label], index) => {
+          const complete = progress?.stage === 'completed' || (currentIndex >= 0 && index < currentIndex);
+          const active = progress?.stage === key;
+          const Icon = complete ? CheckCircle2 : null;
+          return (
+            <div key={key} style={{ display: 'flex', gap: '9px', alignItems: 'flex-start', padding: '10px', borderRadius: '9px', border: `1px solid ${active ? '#60a5fa' : '#e2e8f0'}`, background: active ? '#eff6ff' : '#fff' }}>
+              <span style={{ flexShrink: 0, width: '20px', height: '20px', borderRadius: '50%', display: 'grid', placeItems: 'center', color: complete ? '#059669' : active ? '#2563eb' : '#94a3b8', fontSize: '0.72rem', fontWeight: 800 }}>
+                {Icon ? <Icon size={17} /> : active ? '●' : index + 1}
+              </span>
+              <div>
+                <div style={{ color: '#1e293b', fontSize: '0.78rem', fontWeight: 700 }}>{label}</div>
+                <div style={{ marginTop: '3px', color: '#64748b', fontSize: '0.7rem', lineHeight: 1.4 }}>
+                  {detailFor(key) || (active ? 'Working…' : complete ? 'Done' : 'Waiting')}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {progress?.status === 'failed' && (
+        <div role="alert" style={{ color: '#b91c1c', marginTop: '12px', fontSize: '0.8rem' }}>
+          Agent stopped at {progress.stage}: {progress.error || 'request failed'}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function AskKnowledgePage() {
   const [query, setQuery] = useState('');
+  const [conversationId, setConversationId] = useState(() => {
+    try {
+      const existing = sessionStorage.getItem('papertrail-ask-conversation-id');
+      if (existing) return existing;
+      const created = crypto.randomUUID();
+      sessionStorage.setItem('papertrail-ask-conversation-id', created);
+      return created;
+    } catch (_) { return `chat-${Date.now()}`; }
+  });
+  const [conversationHistory, setConversationHistory] = useState(() => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('papertrail-ask-history') || '[]');
+      return Array.isArray(saved) ? saved.slice(-8) : [];
+    } catch (_) { return []; }
+  });
+  const [retrievalMode, setRetrievalMode] = useState('agent');
+  const [includeUnreviewed, setIncludeUnreviewed] = useState(false);
+  const [queryProgress, setQueryProgress] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const [currentQuestion, setCurrentQuestion] = useState('');
+  const [queryError, setQueryError] = useState('');
   const [showPipeline, setShowPipeline] = useState(false);
   const [answerView, setAnswerView] = useState('text'); // 'text' | 'graph' | 'table'
+  const [queryExamples, setQueryExamples] = useState([]);
 
-  const suggestedQueries = [
-    "What is the issue with any vendor?",
-    "What did a client buy?",
-    "What did Castro PLC buy?",
-    "Who are the sellers and buyers?",
-    "Which company issued invoice 97159829?",
-    "What products and line items are in our invoices?"
-  ];
+  useEffect(() => {
+    try { sessionStorage.setItem('papertrail-ask-history', JSON.stringify(conversationHistory.slice(-8))); }
+    catch (_) { /* Session storage may be disabled; current page context still works. */ }
+  }, [conversationHistory]);
+
+  useEffect(() => {
+    let active = true;
+    aiService.getKnowledgeGraph().then(graph => {
+      if (!active) return;
+      const nodes = graph.nodes || [];
+      const customers = nodes.filter(node => node.type === 'Customer');
+      const vendors = nodes.filter(node => ['Vendor', 'Supplier', 'Organization', 'Company'].includes(node.type));
+      const invoices = nodes.filter(node => node.type === 'Invoice');
+      const nameOf = node => node?.data?.name || node?.label || node?.id;
+      const customer = customers[0];
+      const vendor = vendors.find(node => node.id !== customer?.id);
+      const examples = [];
+      if (customer) examples.push({ label: 'Customer briefing', question:
+        `Prepare an account briefing for ${nameOf(customer)} covering invoice amounts, review status, products, and linked communications.` });
+      if (invoices[0]) examples.push({ label: 'Invoice lookup', question:
+        `Summarize invoice ${invoices[0].data?.invoice_number || invoices[0].label}: customer, vendor, line items, amount, and review status.` });
+      if (vendor && customer) examples.push({ label: 'Vendor relationship', question:
+        `Show how ${nameOf(vendor)} is connected to ${nameOf(customer)} through invoices and products.` });
+      if (customer) examples.push({ label: 'Email summary', question:
+        `Summarize the email conversation linked to ${nameOf(customer)}, including commitments and open actions.` });
+      examples.push({ label: 'Review risks', question:
+        'Which invoices need review, and what evidence explains why they need attention?' });
+      examples.push({ label: 'Invoice count', question: 'How many invoice records are in the knowledge graph?' });
+      if (vendors.length > 1) examples.push({ label: 'Compare vendors', question:
+        `Compare ${nameOf(vendors[0])} and ${nameOf(vendors[1])} using their invoice activity and linked customers.` });
+      if (!examples.length) examples.push({ label: 'Invoice contents', question:
+        'What products and line items are recorded in the invoices?' });
+      setQueryExamples(examples);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   const handleSearch = async (overrideQuery) => {
     const q = overrideQuery || query;
     if (!q.trim()) return;
     
     setIsLoading(true);
+    setQueryError('');
+    setQueryProgress(retrievalMode === 'agent'
+      ? { status: 'running', stage: 'accepted', events: [] }
+      : null);
     try {
-      const res = await aiService.queryKnowledge(q);
+      const res = await aiService.queryKnowledge(q, null, retrievalMode, setQueryProgress,
+        includeUnreviewed, conversationHistory, conversationId);
       setResult(res);
+      setCurrentQuestion(q);
+      setConversationHistory(current => [...current,
+        { role: 'user', content: q },
+        { role: 'assistant', content: res.answer || '' }
+      ].filter(message => message.content).slice(-8));
       setAnswerView('text'); // default view is text
     } catch (err) {
+      setQueryError(err.message || 'The question could not be completed. Please try again.');
+      setQueryProgress(current => ({ ...(current || {}), status: 'failed', error: err.message }));
       console.error("Query failed:", err);
     } finally {
       setIsLoading(false);
@@ -662,7 +823,7 @@ export default function AskKnowledgePage() {
           marginBottom: '10px'
         }}>
           <Sparkles size={14} />
-          <span>Evidence-Backed Deterministic Retrieval • Zero External LLM APIs</span>
+          <span>Evidence-grounded retrieval · Agent workflow with configured model</span>
         </div>
         <h1 style={{ fontSize: '2.25rem', fontWeight: 800, color: 'var(--text-primary)' }}>
           Ask Knowledge Agent
@@ -670,6 +831,37 @@ export default function AskKnowledgePage() {
         <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
           Query structured facts, entities, and multi-hop relationships extracted directly from your business invoices.
         </p>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', marginTop: '14px', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+          Retrieval mode
+          <select value={retrievalMode} onChange={event => setRetrievalMode(event.target.value)}
+            style={{ padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: '8px', background: '#fff', color: '#0f172a' }}>
+            <option value="agent">Agent · plan, retrieve, verify</option>
+            <option value="hybrid">Standard graph retrieval</option>
+          </select>
+        </label>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', marginTop: '10px', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+          <input type="checkbox" checked={includeUnreviewed}
+            onChange={event => setIncludeUnreviewed(event.target.checked)} />
+          Include unreviewed invoice records
+        </label>
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px', marginTop: '8px', minHeight: '26px' }}>
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+            {conversationHistory.length ? 'Follow-up questions use this chat’s recent context.' : 'Ask a follow-up without repeating the customer name.'}
+          </span>
+          {conversationHistory.length > 0 && <button className="btn btn-outline btn-sm"
+            onClick={() => {
+              const created = crypto.randomUUID();
+              setConversationId(created);
+              try { sessionStorage.setItem('papertrail-ask-conversation-id', created); } catch (_) { }
+              setConversationHistory([]);
+              setResult(null);
+              setCurrentQuestion('');
+              setQueryError('');
+            }}
+            style={{ padding: '3px 9px', fontSize: '0.72rem' }}>
+            <RotateCcw size={12} /> New chat
+          </button>}
+        </div>
       </div>
 
       {/* Query Search Box */}
@@ -695,46 +887,72 @@ export default function AskKnowledgePage() {
           disabled={isLoading || !query.trim()}
           style={{ padding: '10px 22px' }}
         >
-          <span>{isLoading ? "Retrieving..." : "Ask Agent"}</span>
+          <span>{isLoading ? (retrievalMode === 'agent' ? "Running agent..." : "Retrieving...") : "Ask Agent"}</span>
           <Send size={15} />
         </button>
       </div>
 
-      {/* Suggested Queries Chips */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
-        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-          Suggested Inquiries:
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px' }}>
-          {suggestedQueries.map((sq, i) => (
-            <button
-              key={i}
-              className="btn btn-outline btn-sm"
-              onClick={() => { setQuery(sq); handleSearch(sq); }}
-              style={{ backgroundColor: '#ffffff', fontSize: '0.8rem' }}
-            >
-              {sq}
+      {isLoading && retrievalMode === 'agent' && (
+        <AgentRunProgress progress={queryProgress} />
+      )}
+
+      <details style={{ alignSelf: 'center', width: '100%', maxWidth: '900px', color: 'var(--text-secondary)' }}>
+        <summary style={{ cursor: 'pointer', textAlign: 'center', fontSize: '0.8rem', fontWeight: 700 }}>
+          Try a sample question · {queryExamples.length || 'loading'} query types
+        </summary>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px', paddingTop: '10px' }}>
+          {queryExamples.map(example => (
+            <button key={example.label} className="btn btn-outline btn-sm"
+              title={example.question}
+              onClick={() => { setQuery(example.question); handleSearch(example.question); }}
+              style={{ backgroundColor: '#ffffff', fontSize: '0.78rem' }}>
+              {example.label}
             </button>
           ))}
         </div>
-      </div>
+      </details>
+
+      {queryError && <div role="alert" className="card" style={{ padding: '12px 16px', color: '#991b1b', background: '#fef2f2', borderColor: '#fecaca' }}>
+        {queryError}
+      </div>}
 
       {/* Query Result Section - ANSWER APPEARS FIRST */}
       {result && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '10px' }}>
+
+          {conversationHistory.length > 2 && <div aria-label="Earlier chat messages" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {conversationHistory.slice(0, -2).map((message, index) => {
+              const isUser = message.role === 'user';
+              return <div key={`${index}-${message.role}`} style={{ alignSelf: isUser ? 'flex-end' : 'flex-start', maxWidth: '82%', padding: '10px 14px', borderRadius: '16px', background: isUser ? '#2563eb' : '#f1f5f9', color: isUser ? '#fff' : '#0f172a', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                <div style={{ fontSize: '0.68rem', fontWeight: 800, opacity: 0.75, marginBottom: '3px' }}>{isUser ? 'You' : 'Assistant'}</div>
+                {message.content}
+              </div>;
+            })}
+          </div>}
           
           {/* Main Answer Card with 3-Way Form Selector Filter */}
           <div className="card" style={{ padding: '24px 28px', backgroundColor: '#ffffff', borderLeft: '5px solid #2563eb', boxShadow: 'var(--shadow-md)' }}>
+
+            {currentQuestion && <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '14px' }}>
+              <div style={{ maxWidth: '82%', padding: '10px 14px', borderRadius: '16px 16px 4px 16px', background: '#2563eb', color: '#fff', lineHeight: 1.5 }}>
+                <div style={{ fontSize: '0.68rem', fontWeight: 800, opacity: 0.8, marginBottom: '3px' }}>You</div>
+                {currentQuestion}
+              </div>
+            </div>}
             
             {/* Top Toolbar: Badges + 3-Form View Selector Filter */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '14px', marginBottom: '18px', borderBottom: '1px solid #f1f5f9', paddingBottom: '14px' }}>
               
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span className={`badge ${result.evidence_citations?.length ? 'badge-blue' : 'badge-gray'}`}>{result.evidence_citations?.length ? 'Graph-backed response' : 'No graph sources returned'}</span>
-                <ConfidenceBadge confidence={result.confidence} />
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                   {result.retrieval_backend ? `Retrieved via ${result.retrieval_backend}` : 'Evidence link is shown when returned by retrieval.'}
                 </span>
+                {result.model_name && (
+                  <span className="badge badge-gray" title={result.answer_mode} style={{ fontSize: '0.68rem' }}>
+                    Model: {result.model_name}
+                  </span>
+                )}
               </div>
 
               {/* 3 Forms Filter: Text (Default), Knowledge Graph, Table */}
@@ -778,43 +996,26 @@ export default function AskKnowledgePage() {
 
             {/* FORM 1: TEXT VIEW (DEFAULT) */}
             {answerView === 'text' && (
-              <div style={{
-                fontSize: '1.05rem',
-                fontWeight: 500,
-                lineHeight: 1.7,
-                color: '#0f172a'
-              }}>
-                {result.answer.split('\n').map((line, idx) => {
-                  if (line.startsWith('### ')) {
-                    return <h3 key={idx} style={{ fontSize: '1.25rem', fontWeight: 800, margin: '14px 0 8px 0', color: '#1e3a8a' }}>{line.replace('### ', '')}</h3>;
-                  }
-                  if (line.startsWith('- ')) {
-                    const content = line.replace('- ', '').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-                    return (
-                      <div key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', margin: '4px 0' }}>
-                        <span style={{ color: '#2563eb', fontWeight: 800 }}>•</span>
-                        <span dangerouslySetInnerHTML={{ __html: content }} />
-                      </div>
-                    );
-                  }
-                  if (line.startsWith('  - ')) {
-                    const content = line.replace('  - ', '').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-                    return (
-                      <div key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', margin: '3px 0 3px 20px' }}>
-                        <span style={{ color: '#059669', fontWeight: 800 }}>-</span>
-                        <span dangerouslySetInnerHTML={{ __html: content }} />
-                      </div>
-                    );
-                  }
-                  if (line.trim() === '') {
-                    return <div key={idx} style={{ height: '8px' }} />;
-                  }
-                  return (
-                    <p key={idx} style={{ margin: '6px 0' }} dangerouslySetInnerHTML={{
-                      __html: line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                    }} />
-                  );
+              <div style={{ fontSize: '1rem', fontWeight: 500, lineHeight: 1.7, color: '#0f172a', maxWidth: '88%', padding: '14px 18px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '4px 16px 16px 16px' }}>
+                <div style={{ fontSize: '0.7rem', color: '#475569', fontWeight: 800, marginBottom: '5px' }}>PaperTrail Assistant</div>
+                {String(result.answer || '').split('\n').map((line, idx) => {
+                  const trimmed = line.trim();
+                  if (!trimmed) return <div key={idx} style={{ height: '6px' }} />;
+                  if (trimmed.startsWith('### ')) return <h3 key={idx} style={{ fontSize: '1.15rem', fontWeight: 800, margin: '12px 0 6px', color: '#1e3a8a' }}>{renderAnswerInline(trimmed.slice(4), 'line-' + idx)}</h3>;
+                  const bullet = trimmed.match(/^[-*]\s+(.*)$/);
+                  if (bullet) return <div key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', margin: '4px 0' }}>
+                    <span aria-hidden="true" style={{ color: '#2563eb', fontWeight: 800 }}>-</span>
+                    <span>{renderAnswerInline(bullet[1], 'line-' + idx)}</span>
+                  </div>;
+                  return <p key={idx} style={{ margin: '6px 0' }}>{renderAnswerInline(trimmed, 'line-' + idx)}</p>;
                 })}
+                {result.evidence_citations?.length > 0 && <div style={{ borderTop: '1px solid #e2e8f0', marginTop: '16px', paddingTop: '10px' }}>
+                  <div style={{ fontSize: '0.74rem', color: '#64748b', fontWeight: 800, marginBottom: '6px' }}>EVIDENCE RECORDS</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {result.evidence_citations.slice(0, 8).map((source, index) => <span key={source.document_id + '-' + index} className="badge badge-gray" title={source.quote + ' - ' + source.document_id}>{source.source}</span>)}
+                    {result.evidence_citations.length > 8 && <span className="badge badge-gray">+{result.evidence_citations.length - 8} more</span>}
+                  </div>
+                </div>}
               </div>
             )}
 
@@ -951,11 +1152,27 @@ export default function AskKnowledgePage() {
                       <FileText size={15} color="#2563eb" />
                       <span>{c.source}</span>
                     </div>
-                    <ConfidenceBadge confidence={c.confidence} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      {c.citation_ids?.map(citation => <span key={citation} className="badge badge-blue">{citation}</span>)}
+                      {c.review_status && <span className={`badge ${['approved', 'corrected'].includes(c.review_status) ? 'badge-green' : 'badge-amber'}`}>
+                        {c.review_status.replaceAll('_', ' ')}
+                      </span>}
+                      {c.synthetic && <span className="badge badge-purple">SYNTHETIC DEMO</span>}
+                    </div>
                   </div>
                   <div style={{ fontSize: '0.85rem', fontStyle: 'italic', color: '#1e293b', backgroundColor: '#f8fafc', padding: '10px', borderRadius: '6px' }}>
                     "{c.quote}"
                   </div>
+                  {c.supporting_emails?.length > 0 && <div style={{ display: 'grid', gap: '8px', marginTop: '4px' }}>
+                    {c.supporting_emails.map(email => <div key={email.canonical_id} style={{ borderLeft: '2px solid #cbd5e1', paddingLeft: '10px' }}>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', fontSize: '0.78rem', fontWeight: 700 }}>
+                        <span>{email.source}</span>
+                        {email.citation_ids?.map(citation => <span key={citation} className="badge badge-blue">{citation}</span>)}
+                        {email.synthetic && <span className="badge badge-purple">SYNTHETIC DEMO</span>}
+                      </div>
+                      {email.quote && <p style={{ fontSize: '0.82rem', lineHeight: 1.45, margin: '5px 0 0' }}>{email.quote}</p>}
+                    </div>)}
+                  </div>}
                 </div>
               ))}
             </div>

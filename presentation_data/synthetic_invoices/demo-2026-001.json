@@ -1,0 +1,40 @@
+{
+  "synthetic": true,
+  "document_id": "presentation-demo-2026-001",
+  "source_file": "DEMO-2026-001.json",
+  "record": {
+    "invoice_number": "DEMO-2026-001",
+    "invoice_date": "2026-10-01",
+    "currency": "USD",
+    "vendor": {
+      "name": "Northstar Office Supply",
+      "address": null,
+      "tax_id": null
+    },
+    "customer": {
+      "name": "Willow Analytics",
+      "address": null,
+      "tax_id": null,
+      "phone": null,
+      "email": null
+    },
+    "bank_account_iban": null,
+    "subtotal": 160,
+    "tax_amount": 16,
+    "total_amount": 176,
+    "items": [
+      {
+        "description": "Wireless barcode scanner",
+        "quantity": 2,
+        "unit_price": 80,
+        "net_amount": 160,
+        "tax_rate_percent": 10,
+        "vat_amount": 16,
+        "gross_amount": 176
+      }
+    ],
+    "evidence": null,
+    "confidence": null,
+    "review_status": "needs_review"
+  }
+}
