@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.extraction.providers import FakeProvider
+from backend.app.extraction.providers import FakeProvider, ProviderResponse
 from backend.app.graph import GraphStore
 from backend.app.ingestion.registry import DocumentRegistry
 from backend.app.ingestion.watcher import FolderWatcher
@@ -197,6 +197,55 @@ class JobPipelineTests(unittest.TestCase):
         stored = self.graph.get_extraction(self.doc_id())
         self.assertTrue(stored["warnings"])
         self.assertEqual(stored["record"]["total_amount"], 99.0)
+
+    def test_document_provider_repairs_validation_findings_with_a_bounded_retry(self):
+        (self.input / "a.png").write_bytes(b"one")
+        self.settle()
+
+        def candidate(total):
+            return {"doc_type": "invoice", "invoice_number": "INV-REPAIR",
+                    "invoice_date": "01/02/2024", "currency": "USD",
+                    "bank_account_iban": None,
+                    "vendor": {"name": "Seller Inc", "address": "1 Main St", "tax_id": "S-9"},
+                    "customer": {"name": "Buyer LLC", "address": "2 Main St", "tax_id": None,
+                                 "phone": None, "email": None},
+                    "items": [{"description": "Paper", "quantity": 2, "unit_price": 3.5,
+                               "net_amount": 7.0, "tax_rate_percent": 10,
+                               "vat_amount": 0.7, "gross_amount": 7.7, "page": 1}],
+                    "subtotal": 7.0, "tax_amount": 0.7, "total_amount": total,
+                    "row_count_seen": 1, "evidence": [], "review_reasons": []}
+
+        class RepairProvider:
+            accepts_document = True
+            name, revision = "vision-api:test", "model-test"
+
+            def __init__(self):
+                self.repair_calls = []
+
+            def extract_document(self, document, context=None, parse=None):
+                return ProviderResponse(candidate(99.0), "initial", {"usage": {"output_tokens": 1}})
+
+            def repair_document(self, document, previous, findings, context=None, parse=None):
+                self.repair_calls.append((previous, findings))
+                return ProviderResponse(candidate(7.7), "repaired", {
+                    "usage": {"output_tokens": 2}, "validation_repair": True})
+
+        provider = RepairProvider()
+        processor = JobProcessor(self.registry, self.graph, provider,
+                                 document_loader=lambda path: type("Document", (), {
+                                     "pages": [], "summary": lambda self: {"kind": "test"}})())
+        result = processor.process_pending()
+        self.assertEqual([row["outcome"] for row in result], ["synced"])
+        self.assertEqual(len(provider.repair_calls), 1)
+        self.assertIn("arithmetic", " ".join(
+            finding["code"] for finding in provider.repair_calls[0][1]))
+        stored = self.graph.get_extraction(self.doc_id())
+        self.assertEqual(stored["record"]["total_amount"], 7.7)
+        self.assertEqual(stored["record"]["review_status"], "needs_review")
+        diagnostics = stored["record"]["provenance"]["generation_diagnostics"]
+        self.assertEqual(diagnostics["validation_repair_attempts"], 1)
+        self.assertEqual(diagnostics["prior_generation_diagnostics"][0]["usage"],
+                         {"output_tokens": 1})
 
     def test_run_cycle_without_processor_only_queues(self):
         (self.input / "a.png").write_bytes(b"one")

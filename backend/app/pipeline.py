@@ -20,6 +20,7 @@ from .ingestion.registry import DocumentRegistry
 
 REVIEW_STATUS = "needs_review"
 SUPPORTED_SUFFIXES = IMAGE_SUFFIXES | PDF_SUFFIXES
+MAX_VISION_VALIDATION_REPAIRS = 2
 
 
 def load_image(path: Path):
@@ -152,6 +153,27 @@ class JobProcessor:
                   "source_file": path.name,
                   "document_pages": loaded.summary() if hasattr(loaded, "summary") else None}
         result = extract_validated(self.provider, loaded, source, parse=parse)
+        repair = getattr(self.provider, "repair_document", None)
+        prior_diagnostics = []
+        repair_attempts = 0
+        while (repair is not None and result["validation_status"] != "valid_reconciled"
+               and repair_attempts < MAX_VISION_VALIDATION_REPAIRS):
+            prior_diagnostics.append(result["provenance"].get("generation_diagnostics") or {})
+            record = result["record"]
+            candidate = {key: record.get(key) for key in (
+                "doc_type", "invoice_number", "invoice_date", "currency",
+                "bank_account_iban", "vendor", "customer", "items", "subtotal",
+                "tax_amount", "total_amount", "row_count_seen", "evidence",
+                "review_reasons")}
+            response = repair(loaded, candidate, result["findings"], None, parse)
+            result = extract_validated(self.provider, loaded, source, parse=parse,
+                                       response_override=response)
+            repair_attempts += 1
+        if repair_attempts:
+            diagnostics = result["provenance"].setdefault("generation_diagnostics", {})
+            diagnostics["validation_repair_attempts"] = repair_attempts
+            diagnostics["prior_generation_diagnostics"] = prior_diagnostics
+            result["record"]["provenance"]["generation_diagnostics"] = diagnostics
         if self.registry.hash_file(path) != job["content_hash"]:
             raise RuntimeError("file changed while it was being processed")  # retryable
         record = result["record"]

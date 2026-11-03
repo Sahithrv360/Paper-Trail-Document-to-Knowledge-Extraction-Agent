@@ -220,8 +220,8 @@ class GraphPageContractTests(unittest.TestCase):
         static = Path(__file__).parents[1] / "app" / "review" / "static"
         app_js = (static / "app.js").read_text(encoding="utf-8")
         page = (static / "index.html").read_text(encoding="utf-8")
-        self.assertIn('"Document", title: "Documents"', app_js)
-        self.assertIn('"LineItem", title: "Line items"', app_js)
+        self.assertIn("function rootedGraph()", app_js)
+        self.assertIn('text: "Explore from this entity"', app_js)
         for edge_type in ("SUPPORTS", "ISSUED", "BILLED_TO", "CONTAINS"):
             self.assertIn(f'"{edge_type}"', app_js)
         self.assertIn('tabindex: "0", role: "button"', app_js)
@@ -232,6 +232,12 @@ class GraphPageContractTests(unittest.TestCase):
         self.assertIn("Open in review", app_js)
         self.assertIn("Invoice → Line item: CONTAINS", page)
         self.assertIn("legend-status needs-review", page)
+        self.assertIn('id="graph-focus"', page)
+        self.assertIn('aria-label="Choose the root entity to explore"', page)
+        self.assertIn('aria-label="Choose graph traversal depth"', page)
+        self.assertIn('value="4" selected>4 hops', page)
+        self.assertIn('"Document")', app_js)
+        self.assertIn("state.graphDepth", app_js)
 
 
 if __name__ == "__main__":

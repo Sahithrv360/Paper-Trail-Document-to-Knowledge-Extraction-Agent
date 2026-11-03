@@ -100,7 +100,8 @@ def parse_model_json(text: str) -> dict:
 
 def extract_validated(provider, image, source: dict,
                       context: Optional[RetrievalContext] = None,
-                      parse: Optional[ParseContext] = None) -> dict:
+                      parse: Optional[ParseContext] = None,
+                      response_override=None) -> dict:
     """Run a provider and return {record, warnings, provenance, findings}.
 
     Raises ``InvalidModelResponse`` (a ``ValueError``) on unparsable or structurally
@@ -108,15 +109,18 @@ def extract_validated(provider, image, source: dict,
     count that evidence and row-count checks are compared against.
     """
     pages_ignored = 0
-    if getattr(provider, "accepts_document", False):
-        # Document-aware providers receive every page plus the parser output.
-        response = provider.extract_document(image, context, parse)
+    if response_override is None:
+        if getattr(provider, "accepts_document", False):
+            # Document-aware providers receive every page plus the parser output.
+            response = provider.extract_document(image, context, parse)
+        else:
+            pages = getattr(image, "pages", None)
+            if pages is not None:  # a LoadedDocument given to an image-only provider
+                pages_ignored = len(pages) - 1
+                image = image.first_image()
+            response = provider.extract(image, context)
     else:
-        pages = getattr(image, "pages", None)
-        if pages is not None:  # a LoadedDocument given to an image-only provider
-            pages_ignored = len(pages) - 1
-            image = image.first_image()
-        response = provider.extract(image, context)
+        response = response_override
     diagnostics = {}
     raw_response = None
     if isinstance(response, ProviderResponse):

@@ -9,22 +9,37 @@
 </head>
 <body>
 <header class="bar">
-  <h1 class="brand">Paper Trail</h1>
-  <nav class="views" aria-label="Views">
-    <button type="button" data-view="review" aria-pressed="true">Review</button>
+  <a class="brand" href="/" aria-label="Paper Trail home"><span class="brand-mark" aria-hidden="true">PT</span><span><strong>Paper Trail</strong><small>Invoice review desk</small></span></a>
+  <nav class="views" aria-label="Pages">
+    <button type="button" data-view="overview" aria-pressed="true">Overview</button>
+    <button type="button" data-view="review" aria-pressed="false">Review</button>
     <button type="button" data-view="graph" aria-pressed="false">Graph</button>
-    <button type="button" data-view="changes" aria-pressed="false">Changes</button>
+    <button type="button" data-view="assistant" aria-pressed="false">Assistant</button>
+    <button type="button" data-view="changes" aria-pressed="false">Activity</button>
   </nav>
+  <span id="live-state" class="live" role="status"><i></i><span>Connecting</span></span>
   <label class="reviewer">Reviewer <input id="reviewer" autocomplete="name" placeholder="Your name"></label>
 </header>
 <p id="notice" class="notice" role="status" hidden></p>
 
-<main id="view-review" class="review">
+<main id="view-overview" class="overview">
+  <div class="ov-head"><div><h2>Today's review desk</h2><p id="ov-sub">Invoices arrive, get read, and wait here for a person to confirm them.</p></div>
+    <div class="ov-head-actions"><button type="button" id="ov-refresh">Refresh now</button><button type="button" class="primary" id="ov-start">Start reviewing</button></div></div>
+  <div id="ov-kpis" class="ov-kpis"></div>
+  <section class="ov-card ov-progress" aria-label="Review progress"><div id="ov-bar"></div></section>
+  <div class="ov-cols">
+    <section class="ov-card"><h3>Waiting for review</h3><ul id="ov-queue" class="ov-list"></ul></section>
+    <section class="ov-card"><h3>Recent activity</h3><ul id="ov-activity" class="ov-list"></ul></section>
+  </div>
+</main>
+
+<main id="view-review" class="review" hidden>
   <aside class="docs" aria-label="Documents">
     <div class="docs-head">
-      <h2>Documents</h2>
+      <h2>Documents <span id="doc-count" class="count-badge"></span></h2>
       <button type="button" id="refresh" class="quiet">Refresh</button>
     </div>
+    <label class="search-wrap" for="doc-search"><span aria-hidden="true">⌕</span><input id="doc-search" type="search" placeholder="Find a document" autocomplete="off"></label>
     <ul id="doc-list"></ul>
   </aside>
   <section class="page" aria-label="Source page">
@@ -54,27 +69,107 @@
   </section>
 </main>
 
-<main id="view-graph" class="graph" hidden>
-  <div class="graph-head">
-    <label><input type="checkbox" id="reviewed-only"> Show reviewed support only</label>
-    <span id="graph-counts"></span>
-    <div class="graph-legend" aria-label="Graph legend">
-      <span><i class="legend-status reviewed" aria-hidden="true"></i> Reviewed support</span>
-      <span><i class="legend-status needs-review" aria-hidden="true"></i> Needs review</span>
-      <span>Document → Invoice: SUPPORTS</span>
-      <span>Vendor → Invoice: ISSUED</span>
-      <span>Invoice → Customer: BILLED_TO</span>
-      <span>Invoice → Line item: CONTAINS</span>
+<main id="view-graph" class="graph" data-mode="full" hidden>
+  <div class="graph-overview">
+    <div class="graph-intro"><h2>Invoice network</h2><p>Invoices that share a vendor, customer, or item description are linked. Select an invoice to see why.</p></div>
+    <div id="graph-metrics" class="graph-metrics" aria-label="Graph summary"></div>
+  </div>
+  <div class="graph-toolbar">
+    <form id="graph-search-form" class="graph-search"><label class="sr-only" for="graph-search">Search invoices, parties, or items</label><span aria-hidden="true">&#8981;</span><input id="graph-search" type="search" placeholder="Find invoice, vendor, or item"><button type="submit" class="quiet">Find</button></form>
+    <fieldset class="graph-filters"><legend>Link types</legend>
+      <label class="f-vendor"><input type="checkbox" id="filter-vendors" checked><i></i>Vendor</label>
+      <label class="f-customer"><input type="checkbox" id="filter-customers" checked><i></i>Customer</label>
+      <label class="f-item"><input type="checkbox" id="filter-items" checked><i></i>Item</label>
+    </fieldset>
+    <div class="graph-actions">
+      <label class="graph-option graph-overview-option"><input type="checkbox" id="full-network" checked> All invoices</label>
+      <label class="graph-option"><input type="checkbox" id="show-direct-links"> Direct links</label>
+      <label class="graph-option"><input type="checkbox" id="graph-3d"> 3D view</label>
+      <label class="graph-option"><input type="checkbox" id="reviewed-only"> Reviewed only</label>
+      <button type="button" id="reload-graph" class="quiet">Refresh</button>
+      <button type="button" id="sync-neo4j">Sync Neo4j</button>
+      <button type="button" id="present-graph" class="primary" aria-pressed="false">Present</button>
     </div>
   </div>
   <div class="graph-body">
-    <div class="graph-canvas"><svg id="graph-svg" role="group" aria-label="Interactive knowledge graph. Select a node to inspect its source and review status."></svg></div>
-    <aside id="node-detail" class="node-detail"><p class="empty">Select a node to see its properties, evidence, and supporting documents.</p></aside>
+    <section class="graph-stage" aria-label="Invoice relationship graph">
+      <div class="graph-subhead">
+        <span id="graph-counts"></span>
+        <span class="graph-pagination"><span id="graph-page-label"></span>
+          <button type="button" id="graph-prev" class="quiet" aria-label="Previous graph page">Previous</button>
+          <button type="button" id="graph-next" class="quiet" aria-label="Next graph page">Next</button>
+        </span>
+      </div>
+      <div class="graph-canvas">
+        <svg id="graph-svg" role="img" aria-label="Invoice relationship graph"></svg>
+        <div class="zoom-tools" aria-label="Graph zoom controls">
+          <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+          <button type="button" id="zoom-out" aria-label="Zoom out">&minus;</button>
+          <button type="button" id="fit-graph">Fit</button>
+          <button type="button" id="clear-focus" hidden>Show all</button>
+        </div>
+        <p id="graph-gesture-help" class="graph-hint"></p>
+      </div>
+      <details class="graph-key" open>
+          <summary>How to read this</summary>
+          <div class="key-body">
+          <p class="key-intro">Each box is an invoice, labeled with its number. A line joins two invoices that share a fact. Matching item text shows similar wording, not proof of identical products.</p>
+          <div class="key-group" aria-label="Nodes">
+            <span><i class="legend-node invoice"></i>Invoice</span>
+            <span class="only-detail"><i class="legend-node vendor"></i>Vendor</span>
+            <span class="only-detail"><i class="legend-node customer"></i>Customer</span>
+            <span class="only-detail"><i class="legend-node shared-hub"></i>Shared item</span>
+            <span><i class="legend-dot ok"></i>Reviewed</span>
+            <span><i class="legend-dot warn"></i>Needs review</span>
+          </div>
+          <div class="key-group" aria-label="Links">
+            <span><i class="legend-edge shared_vendor"></i>Same vendor</span>
+            <span><i class="legend-edge shared_customer"></i>Same customer</span>
+            <span><i class="legend-edge shared_itemdescription"></i>Same item text</span>
+            <span class="only-detail"><i class="legend-edge direct"></i>Direct link (dashed)</span>
+          </div>
+          </div>
+        </details>
+    </section>
+    <aside class="graph-rail">
+      <aside id="node-detail" class="node-detail"><p class="empty">Select an invoice to see its extracted details, linked invoices, and source documents.</p></aside>
+      <button type="button" id="ask-about-node" class="primary">Ask the assistant about this</button>
+    </aside>
   </div>
   <div id="suggestions"></div>
 </main>
 
+<main id="view-assistant" class="assistant" hidden>
+  <section class="chat-shell" aria-label="Assistant">
+    <header class="chat-top">
+      <div><h2>Ask the graph</h2><p>Answers come from your invoice graph and link back to source invoices.</p></div>
+      <div class="chat-opts">
+        <label class="chat-option"><input type="checkbox" id="chat-reviewed-only"> Reviewed facts only</label>
+        <label class="chat-option"><input type="checkbox" id="chat-use-llm"> Use hosted AI</label>
+        <button type="button" id="chat-clear" class="quiet">New chat</button>
+      </div>
+    </header>
+    <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-label="Conversation"></div>
+    <form id="chat-form" class="chat-form">
+      <label class="sr-only" for="chat-question">Your question</label>
+      <textarea id="chat-question" rows="1" maxlength="2000" placeholder="Ask about an invoice, vendor, customer, or item"></textarea>
+      <button type="submit" class="primary">Send</button>
+    </form>
+    <p class="chat-foot"><span id="chat-call-status">Hosted answers: up to 10 per hour; repeated questions reuse cached answers.</span> Enter sends, Shift+Enter adds a line.</p>
+  </section>
+  <aside class="chat-side" aria-label="Suggestions">
+    <h3>Try asking</h3>
+    <button type="button" data-question="Which invoices share an item description?">Which invoices share an item description?</button>
+    <button type="button" data-question="Which vendors appear on more than one invoice?">Which vendors appear on more than one invoice?</button>
+    <button type="button" data-question="Which invoices still need review?">Which invoices still need review?</button>
+    <button type="button" data-question="Why is invoice 62517865 connected?">Why is an invoice linked to others?</button>
+    <h3>How answers are made</h3>
+    <p>The assistant searches the Neo4j graph first. Hosted AI is off unless you turn it on, and then it only sees the facts that were retrieved.</p>
+  </aside>
+</main>
+
 <main id="view-changes" class="changes" hidden>
+  <div class="changes-head"><h2>Activity</h2><p>Every approval, correction, and graph sync, newest first.</p></div>
   <table class="grid"><thead><tr><th>When</th><th>Action</th><th>Document</th><th>Version</th><th>Provider</th><th>Nodes +/~/−</th><th>Edges +/~/−</th><th>Run</th></tr></thead>
   <tbody id="change-rows"></tbody></table>
 </main>

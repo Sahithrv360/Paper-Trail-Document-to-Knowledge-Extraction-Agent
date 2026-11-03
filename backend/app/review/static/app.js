@@ -3,8 +3,13 @@
 
 const state = {
   token: "", docs: [], detail: null, page: 1, active: null, editing: false,
-  imageUrl: null, graph: null, selectedNode: null, graphRecord: null,
-  graphRecordFor: null, graphDetailError: null, graphDetailRequest: 0,
+  imageUrl: null, graph: null, selectedNode: null, graphPage: 0, graphPageSize: 8,
+  docSearch: "",
+  graphSource: "Neo4j",
+  graphZoom: 1, graphPanX: 0, graphPanY: 0, graphDrag: null,
+  graphRotationX: -.18, graphRotationY: .35, graph3d: false,
+  graphBaseLayout: null, graphLayoutNodes: null, graphLayoutEdges: null, graphLayoutSignature: "",
+  graphViewWidth: 1400, graphViewHeight: 820,
 };
 
 const HEADER_FIELDS = [
@@ -99,7 +104,11 @@ async function loadDocuments() {
 
 function renderDocList() {
   const list = $("doc-list");
-  fill(list, ...state.docs.map((doc) => el("li", {},
+  const query = state.docSearch.trim().toLocaleLowerCase();
+  const visible = state.docs.filter((doc) => !query ||
+    `${doc.file || ""} ${doc.validation_status || ""} ${doc.review_status || ""}`.toLocaleLowerCase().includes(query));
+  $("doc-count").textContent = query ? `${visible.length}/${state.docs.length}` : state.docs.length;
+  fill(list, ...(visible.length ? visible.map((doc) => el("li", {},
     el("button", {
       type: "button", "aria-current": state.detail && state.detail.document_id === doc.document_id ? "true" : "false",
       onclick: () => selectDocument(doc.document_id),
@@ -107,7 +116,8 @@ function renderDocList() {
     el("span", { class: "doc-file", text: doc.file || doc.document_id }),
     el("span", { class: "doc-meta" },
       statusPill(doc.review_status || doc.file_status), " ",
-      doc.validation_status ? STATUS_TEXT[doc.validation_status] || doc.validation_status : (doc.last_error ? "Extraction failed" : "Not extracted yet"))))));
+      doc.validation_status ? STATUS_TEXT[doc.validation_status] || doc.validation_status : (doc.last_error ? "Extraction failed" : "Not extracted yet")))))
+    : [el("li", { class: "empty", text: query ? "No matching documents." : "No documents available." })]));
 }
 
 async function selectDocument(documentId) {
@@ -315,10 +325,10 @@ function renderFields(record) {
     ...(editable ? [el("th", { colspan: "2", text: "Corrected value (as printed)" })]
       : [el("th", { text: "As read" }), el("th", { text: "Parsed" })]), el("th", { text: "Evidence" })));
   const body = el("tbody");
-  body.append(el("tr", { class: "group" }, el("td", { colspan: "4", text: "Invoice" })));
+  body.append(el("tr", { class: "group invoice-group" }, el("td", { colspan: "4", text: "Invoice" })));
   HEADER_FIELDS.forEach(([key, label]) => body.append(fieldRow(key, label, record, editable)));
   for (const [role, fields] of Object.entries(PARTY_FIELDS)) {
-    body.append(el("tr", { class: "group" }, el("td", { colspan: "4", text: role === "vendor" ? "Vendor (issued the invoice)" : "Customer (billed)" })));
+    body.append(el("tr", { class: `group ${role}-group` }, el("td", { colspan: "4", text: role === "vendor" ? "Vendor (issued the invoice)" : "Customer (billed)" })));
     fields.forEach(([key, label]) => body.append(fieldRow(`${role}.${key}`, label, record, editable)));
   }
   const nodes = [el("table", { class: "grid" }, head, body)];
@@ -326,7 +336,7 @@ function renderFields(record) {
     nodes.push(itemsEditor(record));
   } else {
     (record.items || []).forEach((item, index) => {
-      body.append(el("tr", { class: "group" }, el("td", { colspan: "4", text: `Line ${index + 1}${item.page ? ` (page ${item.page})` : ""}` })));
+      body.append(el("tr", { class: "group line-group" }, el("td", { colspan: "4", text: `Line ${index + 1}${item.page ? ` (page ${item.page})` : ""}` })));
       ITEM_FIELDS.forEach(([key, label]) => body.append(fieldRow(`items[${index}].${key}`, label, record, false)));
     });
     if (!(record.items || []).length) body.append(el("tr", {}, el("td", { colspan: "4", class: "empty", text: "No line items were read." })));
@@ -415,201 +425,552 @@ function renderHistory() {
 async function loadGraph() {
   try {
     const reviewed = $("reviewed-only").checked ? "1" : "0";
-    state.graph = await (await api(`/api/graph?reviewed_only=${reviewed}`)).json();
-    if (state.selectedNode && state.graph.nodes.some((node) => node.id === state.selectedNode)) {
-      selectNode(state.selectedNode); // refresh details against the current support filter
+    let neoGraph = null;
+    let neoError = null;
+    try { neoGraph = await (await api(`/api/neo4j/graph?reviewed_only=${reviewed}`)).json(); }
+    catch (error) { neoError = error; }
+    if (!neoGraph || !graphHasInvoiceLinks(neoGraph)) {
+      const localGraph = await (await api(`/api/graph?reviewed_only=${reviewed}`)).json();
+      if (graphHasInvoiceLinks(localGraph) || !neoGraph) {
+        state.graph = localGraph;
+        state.graphSource = "SQLite fallback";
+        notify(neoError
+          ? `Neo4j is unavailable (${neoError.message}). Showing the local SQLite graph; use Sync Neo4j to rebuild the projection.`
+          : "Neo4j has no invoice-to-invoice links, but SQLite does. Showing SQLite links; use Sync Neo4j to rebuild Neo4j.", true);
+      } else {
+        state.graph = neoGraph;
+        state.graphSource = "Neo4j";
+      }
     } else {
-      state.selectedNode = null;
-      state.graphRecord = null;
-      state.graphRecordFor = null;
-      renderGraph();
+      state.graph = neoGraph;
+      state.graphSource = "Neo4j";
     }
+    const { nodes, invoiceHubs } = invoiceHubIndex(state.graph);
+    if (!nodes[state.selectedNode]) {
+      const invoices = state.graph.nodes.filter((node) => node.type === "Invoice").sort((a, b) => {
+        const degree = (invoiceHubs.get(b.id)?.size || 0) - (invoiceHubs.get(a.id)?.size || 0);
+        return degree || String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id));
+      });
+      state.selectedNode = invoices[0]?.id || null;
+    }
+    renderGraph();
   } catch (error) {
-    notify(`Could not load the graph: ${error.message}`, true);
+    state.graph = null;
+    $("graph-counts").textContent = "Neo4j and SQLite graphs are unavailable.";
+    notify(`Could not load the invoice graph: ${error.message}. Check the review server and graph database.`, true);
   }
+}
+
+async function syncNeo4j() {
+  const button = $("sync-neo4j"); button.disabled = true;
+  try {
+    const response = await api("/api/neo4j/sync", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewed_only: $("reviewed-only").checked }),
+    });
+    const result = await response.json();
+    state.graphPage = 0;
+    const counts = result.relationships_by_type || {};
+    const directLinks = ["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"]
+      .reduce((sum, type) => sum + (counts[type] || 0), 0);
+    notify(`Synced ${result.nodes} nodes and ${result.edges} relationships to Neo4j, including ${directLinks} direct invoice links.`);
+    await loadGraph();
+  } catch (error) {
+    notify(`Could not sync the Neo4j graph: ${error.message}`, true);
+  } finally { button.disabled = false; }
 }
 
 function nodeStatus(node) {
-  const support = node.support || [];
-  return support.length && support.every((s) => s.review_status === "approved" || s.review_status === "corrected")
-    ? "reviewed" : "needs_review";
+  return node.support.length && node.support.every((s) => s.review_status === "approved" || s.review_status === "corrected") ? "reviewed" : "needs_review";
 }
 
-const GRAPH_COLUMNS = [
-  { type: "Document", title: "Documents", x: 24 },
-  { type: "Vendor", title: "Vendors", x: 294 },
-  { type: "Invoice", title: "Invoices", x: 564 },
-  { type: "Customer", title: "Customers", x: 834 },
-  { type: "LineItem", title: "Line items", x: 1104 },
-];
-const GRAPH_NODE_TYPES = new Set(GRAPH_COLUMNS.map((column) => column.type));
-const GRAPH_EDGE_TYPES = new Set(["SUPPORTS", "ISSUED", "BILLED_TO", "CONTAINS"]);
+function invoiceHubIndex(graph) {
+  const nodes = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
+  const lineItemInvoice = new Map();
+  const invoiceHubs = new Map();
+  const hubInvoices = new Map();
+  const add = (invoiceId, hubId) => {
+    if (!nodes[invoiceId] || !nodes[hubId]) return;
+    if (!invoiceHubs.has(invoiceId)) invoiceHubs.set(invoiceId, new Set());
+    if (!hubInvoices.has(hubId)) hubInvoices.set(hubId, new Set());
+    invoiceHubs.get(invoiceId).add(hubId);
+    hubInvoices.get(hubId).add(invoiceId);
+  };
+  graph.edges.filter((e) => e.type === "CONTAINS").forEach((e) => lineItemInvoice.set(e.target, e.source));
+  graph.edges.forEach((e) => {
+    if (e.type === "ISSUED" && nodes[e.source]?.type === "Vendor") add(e.target, e.source);
+    if (e.type === "BILLED_TO" && nodes[e.target]?.type === "Customer") add(e.source, e.target);
+    if (e.type === "MATCHES_DESCRIPTION") add(lineItemInvoice.get(e.source), e.target);
+  });
+  // Only show shared hubs; one-off facts do not create cross-invoice links.
+  for (const [hubId, invoices] of hubInvoices) {
+    if (invoices.size < 2) {
+      hubInvoices.delete(hubId);
+      for (const invoiceId of invoices) invoiceHubs.get(invoiceId)?.delete(hubId);
+    }
+  }
+  return { nodes, invoiceHubs, hubInvoices };
+}
 
-function graphNodeLabel(node, itemCounts, documentsByInvoice) {
-  const props = node.props || {};
-  if (node.type === "Document") {
-    return [props.filename || props.document_id || node.id, `Version ${show(props.version)} · ${show(props.doc_type || "document")}`];
+function graphHasInvoiceLinks(graph) {
+  if ((graph.edges || []).some((edge) => ["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"].includes(edge.type))) return true;
+  return [...invoiceHubIndex(graph).hubInvoices.values()].some((invoiceIds) => invoiceIds.size > 1);
+}
+
+function invoiceOverviewEdges(graph, invoiceNodes, hubInvoices, nodes) {
+  const invoiceIds = new Set(invoiceNodes.map((node) => node.id));
+  const types = new Set(["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"]);
+  const direct = (graph.edges || []).filter((edge) => types.has(edge.type) &&
+    invoiceIds.has(edge.source) && invoiceIds.has(edge.target));
+  if (direct.length) return direct;
+  const hubTypes = { Vendor: "SAME_VENDOR_AS", Customer: "SAME_CUSTOMER_AS", ItemDescription: "SAME_ITEM_DESCRIPTION_AS" };
+  const derived = [];
+  for (const [hubId, linkedInvoices] of hubInvoices) {
+    const hub = nodes[hubId], type = hubTypes[hub?.type];
+    if (!type) continue;
+    const ids = [...linkedInvoices].sort();
+    for (let i = 0; i < ids.length; i += 1) for (let j = i + 1; j < ids.length; j += 1) {
+      const shared = hub.props.normalized_description || hub.props.name || "shared fact";
+      derived.push({ source: ids[i], target: ids[j], type,
+        props: type === "SAME_ITEM_DESCRIPTION_AS"
+          ? { shared_description: shared } : { shared_name: shared } });
+    }
   }
-  if (node.type === "Invoice") {
-    const doc = documentsByInvoice[node.id];
-    const total = props.total_amount == null ? "Total unavailable" : `Total ${props.total_amount}`;
-    return [props.invoice_number || "(no invoice number)", `${total} · ${itemCounts[node.id] || 0} line(s)${doc ? ` · ${doc.props.filename || ""}` : ""}`];
-  }
-  if (node.type === "LineItem") {
-    const description = props.description || "(description unavailable)";
-    const gross = props.gross_amount == null ? "Gross unavailable" : `Gross ${props.gross_amount}`;
-    return [description, `Row ${(Number(props.row_index) || 0) + 1} · ${gross}`];
-  }
-  return [props.name || `(${node.type.toLowerCase()} name unavailable)`,
-    props.tax_id ? `Tax ID ${props.tax_id}` : "No tax ID"];
+  return derived;
+}
+
+function overviewLayout(nodes, width, height) {
+  const cellWidth = 180, cellHeight = 82;
+  const columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length * (height / width) * (cellWidth / cellHeight))));
+  const rows = Math.max(1, Math.ceil(nodes.length / columns));
+  const viewWidth = columns * cellWidth + 60, viewHeight = rows * cellHeight + 60;
+  const positions = Object.fromEntries(nodes.map((node, index) => {
+    const column = index % columns, row = Math.floor(index / columns);
+    return [node.id, { id: node.id, type: node.type,
+      x: 30 + column * cellWidth + cellWidth / 2,
+      y: 30 + row * cellHeight + cellHeight / 2, z: 0 }];
+  }));
+  return { positions, width: viewWidth, height: viewHeight };
 }
 
 function renderGraph() {
   const graph = state.graph;
   if (!graph) return;
-  const nodes = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
-  const columns = Object.fromEntries(GRAPH_COLUMNS.map(({ type }) => [type, []]));
-  graph.nodes.forEach((node) => { if (GRAPH_NODE_TYPES.has(node.type)) columns[node.type].push(node); });
-  const itemCounts = {}, documentsByInvoice = {};
-  graph.edges.filter((edge) => edge.type === "CONTAINS").forEach((edge) => {
-    itemCounts[edge.source] = (itemCounts[edge.source] || 0) + 1;
-  });
-  graph.edges.filter((edge) => edge.type === "SUPPORTS").forEach((edge) => {
-    if (nodes[edge.source] && nodes[edge.target]) documentsByInvoice[edge.target] = nodes[edge.source];
-  });
-  const label = (node) => graphNodeLabel(node, itemCounts, documentsByInvoice);
-  const W = 228, H = 58, GAP = 18, position = {};
-  GRAPH_COLUMNS.forEach(({ type, x }) => {
-    columns[type].sort((a, b) => label(a)[0].localeCompare(label(b)[0]));
-    columns[type].forEach((node, i) => { position[node.id] = { x, y: 52 + i * (H + GAP) }; });
-  });
-  const rows = Math.max(1, ...Object.values(columns).map((list) => list.length));
-  const root = $("graph-svg"), width = GRAPH_COLUMNS.at(-1).x + W + 24;
-  const height = 52 + rows * (H + GAP) + 16;
-  root.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  root.setAttribute("width", width);
-  root.setAttribute("height", height);
+  const { nodes, invoiceHubs, hubInvoices } = invoiceHubIndex(graph);
+  const invoiceNodes = graph.nodes.filter((n) => n.type === "Invoice").sort((a, b) =>
+    String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id)));
+  const fullNetwork = $("full-network").checked;
+  const pageCount = Math.max(1, Math.ceil(invoiceNodes.length / state.graphPageSize));
+  state.graphPage = Math.min(state.graphPage, pageCount - 1);
+  const pageInvoices = invoiceNodes.slice(state.graphPage * state.graphPageSize,
+    (state.graphPage + 1) * state.graphPageSize);
   const selected = state.selectedNode;
-  const edges = graph.edges.filter((edge) => GRAPH_EDGE_TYPES.has(edge.type)
-    && position[edge.source] && position[edge.target]);
+  const selectedNode = nodes[selected];
+  const showingConnections = !fullNetwork && ["Invoice", "ItemDescription", "Vendor", "Customer"].includes(selectedNode?.type);
+  let selectedHubs = new Set();
+  if (selectedNode?.type === "Invoice") selectedHubs = invoiceHubs.get(selected) || new Set();
+  else if (["ItemDescription", "Vendor", "Customer"].includes(selectedNode?.type)) selectedHubs = new Set([selected]);
+  selectedHubs = new Set([...selectedHubs].filter((hubId) => {
+    const type = nodes[hubId]?.type;
+    return (type === "ItemDescription" && $("filter-items").checked) ||
+      (type === "Vendor" && $("filter-vendors").checked) ||
+      (type === "Customer" && $("filter-customers").checked);
+  }));
+
+  let visibleInvoiceIds = new Set((fullNetwork ? invoiceNodes : pageInvoices).map((n) => n.id));
+  if (showingConnections) {
+    visibleInvoiceIds = new Set([selectedNode.type === "Invoice" ? selected : null].filter(Boolean));
+    for (const hubId of selectedHubs) {
+      for (const invoiceId of hubInvoices.get(hubId) || []) visibleInvoiceIds.add(invoiceId);
+    }
+  }
+  const allConnectedInvoiceCount = visibleInvoiceIds.size;
+  const MAX_INVOICES = showingConnections ? 28 : state.graphPageSize;
+  const invoiceCandidates = invoiceNodes.filter((n) => visibleInvoiceIds.has(n.id));
+  const selectedInvoiceFirst = selectedNode?.type === "Invoice"
+    ? invoiceCandidates.find((n) => n.id === selected) : null;
+  const visibleInvoices = fullNetwork ? invoiceCandidates : selectedInvoiceFirst
+    ? [selectedInvoiceFirst, ...invoiceCandidates.filter((n) => n.id !== selected).slice(0, MAX_INVOICES - 1)]
+    : invoiceCandidates.slice(0, MAX_INVOICES);
+  const invoiceIds = new Set(visibleInvoices.map((n) => n.id));
+  const visibleHubIds = new Set();
+  if (!fullNetwork && selectedHubs.size) {
+    for (const hubId of selectedHubs) {
+      if ([...(hubInvoices.get(hubId) || [])].filter((id) => invoiceIds.has(id)).length > 1) {
+        visibleHubIds.add(hubId);
+      }
+    }
+  }
+  const visibleHubs = [...visibleHubIds].map((id) => nodes[id]).filter(Boolean);
+  const edges = [];
+  for (const hub of visibleHubs) {
+    for (const invoiceId of hubInvoices.get(hub.id) || []) {
+      if (invoiceIds.has(invoiceId)) edges.push({ source: invoiceId, target: hub.id,
+        type: `SHARED_${hub.type.toUpperCase()}` });
+    }
+  }
+  const directTypes = new Set(["SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"]);
+  const directTypeAllowed = (type) => (type === "SAME_ITEM_DESCRIPTION_AS" && $("filter-items").checked) ||
+    (type === "SAME_VENDOR_AS" && $("filter-vendors").checked) ||
+    (type === "SAME_CUSTOMER_AS" && $("filter-customers").checked);
+  const allInvoiceEdges = fullNetwork ? invoiceOverviewEdges(graph, invoiceNodes, hubInvoices, nodes) : [];
+  const directEdges = fullNetwork
+    ? allInvoiceEdges.filter((e) => directTypeAllowed(e.type))
+    : $("show-direct-links").checked
+      ? graph.edges.filter((e) => directTypes.has(e.type) && directTypeAllowed(e.type) && invoiceIds.has(e.source) && invoiceIds.has(e.target))
+      : [];
+  edges.push(...(fullNetwork ? directEdges : directEdges.slice(0, 160)));
+  const itemCount = {};
+  graph.edges.filter((e) => e.type === "CONTAINS").forEach((e) => { itemCount[e.source] = (itemCount[e.source] || 0) + 1; });
+  const docOf = {};
+  graph.edges.filter((e) => e.type === "SUPPORTS").forEach((e) => { docOf[e.target] = nodes[e.source]; });
+  const label = (n) => {
+    if (n.type === "Invoice") return [n.props.invoice_number || "(no number)",
+      `${n.props.invoice_date || "date unknown"}  ·  ${itemCount[n.id] || 0} line items`];
+    if (n.type === "ItemDescription") return [n.props.normalized_description || "(description)",
+      `Shared item description  ·  ${hubInvoices.get(n.id)?.size || 0} invoices`];
+    return [n.props.name || n.id, `${n.type}  ·  ${hubInvoices.get(n.id)?.size || 0} invoices`];
+  };
+  const vendorOf = (n) => { for (const h of invoiceHubs.get(n.id) || []) if (nodes[h]?.type === "Vendor") return String(nodes[h].props.name || h); return "~"; };
+  const groupedInvoices = fullNetwork ? visibleInvoices.slice().sort((a, b) => vendorOf(a).localeCompare(vendorOf(b))) : visibleInvoices;
+  const viewNodes = [...groupedInvoices, ...visibleHubs];
+  const overview = fullNetwork ? overviewLayout(viewNodes, 1400, 820) : null;
+  const viewWidth = overview?.width || 1400, viewHeight = overview?.height || 820;
+  state.graphViewWidth = viewWidth; state.graphViewHeight = viewHeight;
+  const layoutSignature = JSON.stringify([fullNetwork ? "overview" : selected, viewNodes.map((node) => node.id),
+    edges.map((edge) => [edge.source, edge.target, edge.type])]);
+  const layout = fullNetwork ? overview.positions : layoutSignature === state.graphLayoutSignature && state.graphBaseLayout
+    ? state.graphBaseLayout : forceLayout(viewNodes, edges, nodes, selected, viewWidth, viewHeight);
+  state.graphLayoutSignature = layoutSignature;
+  state.graphBaseLayout = layout;
+  state.graphLayoutNodes = viewNodes;
+  state.graphLayoutEdges = edges.filter((edge) => layout[edge.source] && layout[edge.target]);
+  const position = state.graph3d && !fullNetwork ? projectGraph3d(layout, viewWidth, viewHeight) : layout;
+  const root = $("graph-svg");
+  root.setAttribute("viewBox", `0 0 ${viewWidth} ${viewHeight}`);
+  root.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  root.setAttribute("width", String(viewWidth));
+  root.setAttribute("height", String(viewHeight));
+  root.style.width = fullNetwork ? `${viewWidth}px` : "100%";
+  root.style.height = fullNetwork ? `${viewHeight}px` : "100%";
+  const visibleEdges = state.graphLayoutEdges;
+  const relationTypes = ["SHARED_VENDOR", "SHARED_CUSTOMER", "SHARED_ITEMDESCRIPTION",
+    "SAME_VENDOR_AS", "SAME_CUSTOMER_AS", "SAME_ITEM_DESCRIPTION_AS"];
   const children = [
-    svg("defs", {}, svg("marker", { id: "graph-arrow", viewBox: "0 0 10 10", refX: 9, refY: 5,
-      markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" },
-    svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: "arrow-head" }))),
-    ...GRAPH_COLUMNS.map(({ type, title, x }) => svg("text", {
-      x, y: 30, class: "col-title", text: `${title} (${columns[type].length})`,
-    })),
-    ...edges.map((edge) => {
-      const a = position[edge.source], b = position[edge.target];
-      const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2;
-      const mid = (x1 + x2) / 2, midY = (y1 + y2) / 2;
-      const on = selected && (edge.source === selected || edge.target === selected);
-      return svg("g", { class: `edge-group${on ? " on" : ""}` },
-        svg("path", { class: "edge", d: `M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}`,
-          "marker-end": "url(#graph-arrow)" }),
-        svg("text", { class: "edge-label", x: mid, y: midY - 5, "text-anchor": "middle", text: edge.type }));
+    svg("defs", {}, ...relationTypes.map((type) => svg("marker", {
+      id: `arrow-${type}`, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6",
+      markerHeight: "6", orient: "auto-start-reverse",
+    }, svg("path", { d: "M 0 0 L 10 5 L 0 10 z", class: `arrow ${type.toLowerCase()}` })))),
+    ...visibleEdges.map((e, edgeIndex) => {
+      const a = position[e.source], b = position[e.target];
+      const dx = b.x - a.x, dy = b.y - a.y, distance = Math.max(1, Math.hypot(dx, dy));
+      const nx = -dy / distance, ny = dx / distance;
+      const bend = e.type === "SAME_VENDOR_AS" ? 30 : e.type === "SAME_CUSTOMER_AS" ? -30
+        : e.type === "SAME_ITEM_DESCRIPTION_AS" ? 44 : 0;
+      const cx = (a.x + b.x) / 2 + nx * bend, cy = (a.y + b.y) / 2 + ny * bend;
+      const on = selected && (e.source === selected || e.target === selected);
+      const relation = e.type.toLowerCase();
+      const endpoint = (id) => {
+        const node = nodes[id];
+        return node?.type === "Invoice" ? `Invoice ${node.props.invoice_number || id}`
+          : node?.props?.name || node?.props?.normalized_description || node?.type || id;
+      };
+      const fromNumber = endpoint(e.source), toNumber = endpoint(e.target);
+      const shared = e.props?.shared_description || e.props?.shared_name || e.props?.name;
+      const reason = e.type === "SAME_VENDOR_AS" ? "same vendor"
+        : e.type === "SAME_CUSTOMER_AS" ? "same customer"
+          : e.type === "SAME_ITEM_DESCRIPTION_AS" ? "same item description"
+            : e.type.replace(/_/g, " ").toLowerCase();
+      return svg("path", { class: `edge ${relation}${on ? " on" : ""}`,
+        "aria-label": `${fromNumber} linked to ${toNumber} by ${reason}${shared ? `: ${shared}` : ""}`,
+        title: `${fromNumber} linked to ${toNumber} by ${reason}${shared ? `: ${shared}` : ""}`,
+        "data-graph-edge": edgeIndex,
+        ...(!e.type.startsWith("SAME_") ? { "marker-end": `url(#arrow-${e.type})` } : {}),
+        opacity: state.graph3d ? Math.max(.38, Math.min(1, ((a.scale || 1) + (b.scale || 1)) / 2)) : null,
+        d: `M${a.x},${a.y} Q${cx},${cy} ${b.x},${b.y}` },
+      svg("title", { text: `${e.type.replace(/_/g, " ").toLowerCase()}${e.props?.shared_description ? ` · ${e.props.shared_description}` : ""}` }));
     }),
-    ...Object.entries(position).map(([id, point]) => {
-      const node = nodes[id], [line1, line2] = label(node);
+    ...viewNodes.slice().sort((a, b) => (position[a.id].depth || 0) - (position[b.id].depth || 0)).map((n) => {
+      const p = position[n.id]; const [line1, line2] = label(n);
+      const width = n.type === "Invoice" ? (fullNetwork ? 160 : 224) : 205;
+      const height = n.type === "Invoice" ? (fullNetwork ? 50 : 68) : 62;
+      const shape = n.type === "Invoice"
+        ? svg("rect", { width, height, rx: 10 })
+        : n.type === "ItemDescription"
+          ? svg("polygon", { points: `18,0 ${width - 18},0 ${width},${height / 2} ${width - 18},${height} 18,${height} 0,${height / 2}` })
+          : n.type === "Vendor"
+            ? svg("polygon", { points: `12,0 ${width - 12},0 ${width},${height / 2} ${width - 12},${height} 12,${height} 0,${height / 2}` })
+            : svg("ellipse", { cx: width / 2, cy: height / 2, rx: width / 2, ry: height / 2 });
       return svg("g", {
-        class: `node node-${node.type.toLowerCase()} ${nodeStatus(node)}${selected === id ? " on" : ""}`,
-        transform: `translate(${point.x},${point.y})`, tabindex: "0", role: "button",
-        "aria-label": `${node.type} ${line1}, ${nodeStatus(node) === "reviewed" ? "reviewed" : "needs review"}`,
-        "aria-pressed": String(selected === id),
-        onclick: () => selectNode(id),
-        onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(id); } },
-      }, svg("title", { text: `${node.type}: ${line1}` }), svg("rect", { width: W, height: H }),
-      svg("text", { x: 10, y: 22, text: truncate(line1, 30) }),
-      svg("text", { x: 10, y: 43, class: "node-subtitle", text: truncate(line2, 30) }));
+        class: `node ${n.type.toLowerCase()} ${nodeStatus(n)}${selected === n.id ? " selected" : ""}`,
+        "data-graph-node": n.id,
+        transform: `translate(${p.x} ${p.y}) scale(${p.scale || 1}) translate(${-width / 2} ${-height / 2})`,
+        opacity: state.graph3d ? Math.max(.62, Math.min(1, .72 + (p.scale || 1) * .28)) : 1,
+        tabindex: "0", role: "button", "aria-label": `${n.type} ${line1}`,
+        onclick: () => selectNode(n.id), onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectNode(n.id); } },
+      }, svg("title", { text: `${line1} · ${line2}` }),
+      shape,
+      svg("text", { x: 10, y: fullNetwork ? 20 : 25, class: "node-title", text: truncate(line1, n.type === "Invoice" ? 24 : 28) }),
+      svg("text", { x: 10, y: fullNetwork ? 38 : 47, class: "node-subtitle", text: truncate(line2, 30) }));
     }),
   ];
-  fill(root, ...children);
-  $("graph-counts").textContent = `${graph.nodes.length} nodes, ${graph.edges.length} edges` +
-    (graph.nodes.length ? " · Dashed outline: needs review; solid green: reviewed." : " · Nothing to show yet.");
+  fill(root, svg("g", { id: "graph-content", transform: graphTransform() }, ...children));
+  const directCount = directEdges.length;
+  $("show-direct-links").closest("label").hidden = fullNetwork;
+  $("graph-3d").closest("label").hidden = fullNetwork;
+  if (fullNetwork) { state.graph3d = false; $("graph-3d").checked = false; }
+  const gestureHelp = $("graph-gesture-help");
+  if (gestureHelp) gestureHelp.textContent = state.graph3d ? "Drag to orbit. Scroll to zoom." : "Drag to pan. Scroll to zoom. Select an invoice to focus.";
+  $("view-graph").dataset.mode = fullNetwork ? "full" : "detail";
+  $("graph-page-label").parentElement.hidden = fullNetwork;
+  $("graph-counts").textContent = fullNetwork
+    ? `${state.graphSource} · all ${visibleInvoices.length} invoices · ${directCount} invoice relation paths`
+    : showingConnections
+    ? `${state.graphSource} · ${visibleInvoices.length}${allConnectedInvoiceCount > visibleInvoices.length ? ` of ${allConnectedInvoiceCount}` : ""} invoices · ${visibleHubs.length} shared hubs${$("show-direct-links").checked ? ` · ${directCount} direct links${directEdges.length > 160 ? " (first 160 shown)" : ""}` : ""}`
+    : `${state.graphSource} · showing ${visibleInvoices.length} invoices from this page`;
+  const sharedHubCount = [...hubInvoices.values()].filter((ids) => ids.size > 1).length;
+  const directLinkCount = graph.edges.filter((e) => directTypes.has(e.type)).length;
+  const pendingCount = invoiceNodes.filter((n) => !["approved", "corrected"].includes(n.props.review_status)).length;
+  fill($("graph-metrics"), metricCard(invoiceNodes.length, "Invoices"),
+    metricCard(sharedHubCount, "Shared hubs"), metricCard(directLinkCount, "Invoice links"),
+    metricCard(pendingCount, "Need review"));
+  $("graph-page-label").textContent = invoiceNodes.length
+    ? `Invoices ${state.graphPage * state.graphPageSize + 1}–${Math.min((state.graphPage + 1) * state.graphPageSize, invoiceNodes.length)} of ${invoiceNodes.length} · `
+      + `page ${state.graphPage + 1}/${pageCount}` : "No invoices";
+  $("graph-prev").disabled = state.graphPage <= 0;
+  $("graph-next").disabled = state.graphPage >= pageCount - 1;
   renderSuggestions(graph);
-  if (selected && nodes[selected]) renderNodeDetail(nodes[selected]);
-  else fill($("node-detail"), el("p", { class: "empty", text: "Select a node to see its properties, evidence, and supporting documents." }));
+  if (selected && nodes[selected]) renderNodeDetail(nodes[selected], docOf);
+}
+
+function setGraphZoom(value) {
+  state.graphZoom = Math.max(.55, Math.min(2.6, value));
+  const content = $("graph-content");
+  if (content) content.setAttribute("transform", graphTransform());
+}
+
+function setupGraphInteractions() {
+  const canvas = $("graph-svg");
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    setGraphZoom(state.graphZoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.target !== canvas) return;
+    state.graphDrag = { x: event.clientX, y: event.clientY,
+      panX: state.graphPanX, panY: state.graphPanY,
+      rotationX: state.graphRotationX, rotationY: state.graphRotationY };
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!state.graphDrag) return;
+    const box = canvas.getBoundingClientRect();
+    const dx = event.clientX - state.graphDrag.x, dy = event.clientY - state.graphDrag.y;
+    if (state.graph3d) {
+      state.graphRotationY = state.graphDrag.rotationY + dx * .008;
+      state.graphRotationX = Math.max(-1.15, Math.min(1.15, state.graphDrag.rotationX + dy * .008));
+      updateGraphProjection();
+    } else {
+      state.graphPanX = state.graphDrag.panX + dx * state.graphViewWidth / Math.max(1, box.width);
+      state.graphPanY = state.graphDrag.panY + dy * state.graphViewHeight / Math.max(1, box.height);
+      const content = $("graph-content");
+      if (content) content.setAttribute("transform", graphTransform());
+    }
+  });
+  const stopDrag = () => { state.graphDrag = null; };
+  canvas.addEventListener("pointerup", stopDrag);
+  canvas.addEventListener("pointercancel", stopDrag);
+}
+
+function updateGraphProjection() {
+  if (!state.graphBaseLayout) return;
+  const root = $("graph-svg");
+  const positions = state.graph3d
+    ? projectGraph3d(state.graphBaseLayout, 1400, 820) : state.graphBaseLayout;
+  for (const element of root.querySelectorAll("[data-graph-node]")) {
+    const node = state.graphLayoutNodes.find((item) => item.id === element.getAttribute("data-graph-node"));
+    const point = positions[node?.id];
+    if (!node || !point) continue;
+    const width = node.type === "Invoice" ? 224 : 205;
+    const height = node.type === "Invoice" ? 68 : 62;
+    element.setAttribute("transform", `translate(${point.x} ${point.y}) scale(${point.scale || 1}) translate(${-width / 2} ${-height / 2})`);
+    element.setAttribute("opacity", state.graph3d ? Math.max(.62, Math.min(1, .72 + (point.scale || 1) * .28)) : 1);
+  }
+  for (const element of root.querySelectorAll("[data-graph-edge]")) {
+    const edge = state.graphLayoutEdges[Number(element.getAttribute("data-graph-edge"))];
+    const a = positions[edge?.source], b = positions[edge?.target];
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, distance = Math.max(1, Math.hypot(dx, dy));
+    const normalX = -dy / distance, normalY = dx / distance;
+    const bend = edge.type === "SAME_VENDOR_AS" ? 30 : edge.type === "SAME_CUSTOMER_AS" ? -30
+      : edge.type === "SAME_ITEM_DESCRIPTION_AS" ? 44 : 0;
+    const cx = (a.x + b.x) / 2 + normalX * bend;
+    const cy = (a.y + b.y) / 2 + normalY * bend;
+    element.setAttribute("d", `M${a.x},${a.y} Q${cx},${cy} ${b.x},${b.y}`);
+    element.setAttribute("opacity", state.graph3d ? Math.max(.38, Math.min(1, ((a.scale || 1) + (b.scale || 1)) / 2)) : 1);
+  }
+}
+
+function metricCard(value, label) {
+  return el("div", { class: "metric-card" }, el("strong", { text: Number(value).toLocaleString() }),
+    el("span", { text: label }));
+}
+
+function graphTransform() {
+  const x = state.graphViewWidth / 2, y = state.graphViewHeight / 2;
+  return `translate(${state.graphPanX} ${state.graphPanY}) translate(${x} ${y}) scale(${state.graphZoom}) translate(${-x} ${-y})`;
+}
+
+function projectGraph3d(layout, width, height) {
+  const cosX = Math.cos(state.graphRotationX), sinX = Math.sin(state.graphRotationX);
+  const cosY = Math.cos(state.graphRotationY), sinY = Math.sin(state.graphRotationY);
+  const focalLength = 900;
+  return Object.fromEntries(Object.entries(layout).map(([id, point]) => {
+    const x = point.x - width / 2;
+    const y = point.y - height / 2;
+    const z = point.z || 0;
+    const rotatedX = x * cosY + z * sinY;
+    const rotatedZ = -x * sinY + z * cosY;
+    const rotatedY = y * cosX - rotatedZ * sinX;
+    const depth = y * sinX + rotatedZ * cosX;
+    const scale = focalLength / Math.max(360, focalLength - depth) * .84;
+    return [id, { ...point, x: width / 2 + rotatedX * scale,
+      y: height / 2 + rotatedY * scale, scale, depth }];
+  }));
+}
+
+function forceLayout(nodes, edges, nodeMap, focusId, width, height) {
+  const center = { x: width / 2, y: height / 2 };
+  const entries = nodes.map((node, index) => {
+    const hash = [...node.id].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7);
+    const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2 + (hash % 1000) / 1000;
+    const radius = node.type === "Invoice" ? 250 + hash % 100 : 135 + hash % 60;
+    return { id: node.id, type: node.type, x: node.id === focusId ? center.x : center.x + Math.cos(angle) * radius,
+      y: node.id === focusId ? center.y : center.y + Math.sin(angle) * radius,
+      z: node.id === focusId ? 0 : node.type === "Invoice" ? (hash % 300) - 150 : 115 + (hash % 100),
+      pinned: node.id === focusId };
+  });
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const springs = edges.map((edge) => ({ a: byId.get(edge.source), b: byId.get(edge.target),
+    ai: entries.findIndex((entry) => entry.id === edge.source), bi: entries.findIndex((entry) => entry.id === edge.target),
+    length: edge.type.startsWith("SAME_") ? 230 : 205 })).filter((edge) => edge.a && edge.b);
+  for (let step = 0; step < 72; step += 1) {
+    const fx = new Array(entries.length).fill(0), fy = new Array(entries.length).fill(0);
+    for (let i = 0; i < entries.length; i += 1) {
+      for (let j = i + 1; j < entries.length; j += 1) {
+        const dx = entries[j].x - entries[i].x, dy = entries[j].y - entries[i].y;
+        const d2 = Math.max(100, dx * dx + dy * dy), force = Math.min(10, 4200 / d2);
+        const inv = 1 / Math.sqrt(d2), x = dx * inv * force, y = dy * inv * force;
+        fx[i] -= x; fy[i] -= y; fx[j] += x; fy[j] += y;
+      }
+    }
+    for (const edge of springs) {
+      const dx = edge.b.x - edge.a.x, dy = edge.b.y - edge.a.y;
+      const distance = Math.max(1, Math.hypot(dx, dy)), force = (distance - edge.length) * .014;
+      const x = dx / distance * force, y = dy / distance * force;
+      const { ai, bi } = edge;
+      fx[ai] += x; fy[ai] += y; fx[bi] -= x; fy[bi] -= y;
+    }
+    const cooling = 1 - step / 90;
+    entries.forEach((entry, index) => {
+      if (entry.pinned) return;
+      fx[index] += (center.x - entry.x) * .002;
+      fy[index] += (center.y - entry.y) * .002;
+      entry.x = Math.max(115, Math.min(width - 115, entry.x + Math.max(-13, Math.min(13, fx[index])) * cooling));
+      entry.y = Math.max(50, Math.min(height - 50, entry.y + Math.max(-13, Math.min(13, fy[index])) * cooling));
+    });
+  }
+  return Object.fromEntries(entries.map((entry) => [entry.id, entry]));
 }
 
 const truncate = (text, n) => (String(text).length > n ? `${String(text).slice(0, n - 1)}…` : String(text));
 
-function selectNode(id) {
-  state.selectedNode = id;
-  state.graphRecord = null;
-  state.graphRecordFor = null;
-  state.graphDetailError = null;
-  const request = ++state.graphDetailRequest;
+function focusGraphNode(id) {
+  const { nodes } = invoiceHubIndex(state.graph);
+  const selectedNode = nodes[id];
+  let invoiceId = selectedNode?.type === "Invoice" ? id : null;
+  if (selectedNode?.type === "LineItem") {
+    invoiceId = state.graph.edges.find((edge) => edge.type === "CONTAINS" && edge.target === id)?.source || null;
+  }
+  state.selectedNode = invoiceId || id;
+  const invoiceNodes = state.graph.nodes.filter((n) => n.type === "Invoice").sort((a, b) =>
+    String(a.props.invoice_number || a.id).localeCompare(String(b.props.invoice_number || b.id)));
+  const invoiceIndex = invoiceNodes.findIndex((n) => n.id === invoiceId);
+  if (invoiceIndex >= 0) state.graphPage = Math.floor(invoiceIndex / state.graphPageSize);
   renderGraph();
-  const node = state.graph && state.graph.nodes.find((candidate) => candidate.id === id);
-  const documentId = node && node.support && node.support[0] && node.support[0].document_id;
-  if (!documentId) return;
-  api(`/api/documents/${encodeURIComponent(documentId)}`).then((response) => response.json())
-    .then((detail) => {
-      if (request !== state.graphDetailRequest || state.selectedNode !== id) return;
-      state.graphRecord = detail.extraction && detail.extraction.effective_record;
-      state.graphRecordFor = documentId;
-      renderNodeDetail(node);
-    })
-    .catch((error) => {
-      if (request !== state.graphDetailRequest || state.selectedNode !== id) return;
-      state.graphDetailError = error.message;
-      renderNodeDetail(node);
-    });
 }
 
-function graphEvidencePaths(node) {
-  const evidence = (state.graphRecord || {}).field_evidence || {};
-  if (node.type === "Invoice") {
-    return new Set(["invoice_number", "invoice_date", "subtotal", "tax_amount", "total_amount",
-      "currency", "bank_account_iban"]);
-  }
-  if (node.type === "Vendor") return new Set(Object.keys(evidence).filter((path) => path.startsWith("vendor.")));
-  if (node.type === "Customer") return new Set(Object.keys(evidence).filter((path) => path.startsWith("customer.")));
-  if (node.type === "LineItem") {
-    const index = Number((node.props || {}).row_index ?? (node.props || {}).position);
-    return Number.isInteger(index) && index >= 0
-      ? new Set(Object.keys(evidence).filter((path) => path.startsWith(`items[${index}].`) || path.startsWith(`items.${index}.`)))
-      : new Set();
-  }
-  return new Set();
+function selectNode(id) { focusGraphNode(id); }
+
+function changeGraphPage(delta) {
+  state.graphPage = Math.max(0, state.graphPage + delta);
+  state.selectedNode = null;
+  renderGraph();
 }
 
-function renderNodeDetail(node) {
-  const props = Object.entries(node.props || {}).filter(([key, value]) => key !== "variants"
-    && key !== "match_key" && value !== null && typeof value !== "object");
-  const panel = $("node-detail"), evidence = (state.graphRecord || {}).field_evidence || {};
-  const paths = graphEvidencePaths(node), provenance = (state.graphRecord || {}).provenance || {};
-  const sources = node.support || [];
-  const evidenceRows = [...paths].filter((path) => evidence[path]).map((path) => {
-    const entry = evidence[path];
-    return el("li", {}, el("strong", { text: path }),
-      ` · ${entry.method || "source"}${entry.page ? ` · page ${entry.page}` : ""}`,
-      entry.quote || entry.raw_text ? el("blockquote", { text: entry.quote || entry.raw_text }) : null,
-      entry.match && entry.match.source ? el("span", { class: "match", text: `Source match: ${entry.match.source.status}` }) : null);
+function renderNodeDetail(node, docOf) {
+  const props = Object.entries(node.props).filter(([k, v]) => k !== "variants" && k !== "match_key" && v !== null && typeof v !== "object");
+  const panel = $("node-detail");
+  const documentId = node.type === "Document"
+    ? (node.props.document_id || node.id.slice("Document:".length))
+    : (node.type === "Invoice" && docOf[node.id] ? docOf[node.id].props.document_id : null);
+  const invoiceItems = node.type === "Invoice" ? state.graph.edges
+    .filter((edge) => edge.type === "CONTAINS" && edge.source === node.id)
+    .sort((a, b) => (a.props.row_index ?? 0) - (b.props.row_index ?? 0))
+    .map((edge) => state.graph.nodes.find((item) => item.id === edge.target)).filter(Boolean) : [];
+  const parties = node.type === "Invoice" ? state.graph.edges.flatMap((edge) => {
+    if (edge.type === "ISSUED" && edge.target === node.id) {
+      const party = state.graph.nodes.find((item) => item.id === edge.source);
+      return party ? [{ relation: "Issued by", party }] : [];
+    }
+    if (edge.type === "BILLED_TO" && edge.source === node.id) {
+      const party = state.graph.nodes.find((item) => item.id === edge.target);
+      return party ? [{ relation: "Billed to", party }] : [];
+    }
+    return [];
+  }) : [];
+  const { nodes: graphNodes, invoiceHubs, hubInvoices } = invoiceHubIndex(state.graph);
+  const sharedHubIds = node.type === "Invoice" ? [...(invoiceHubs.get(node.id) || [])]
+    : ["ItemDescription", "Vendor", "Customer"].includes(node.type) ? [node.id] : [];
+  const linked = new Map();
+  sharedHubIds.forEach((hubId) => {
+    for (const invoiceId of hubInvoices.get(hubId) || []) {
+      if (invoiceId === node.id) continue;
+      if (!linked.has(invoiceId)) linked.set(invoiceId, []);
+      linked.get(invoiceId).push(graphNodes[hubId]);
+    }
   });
-  const provenanceRows = ["provider", "model_revision", "prompt_version", "extraction_method"]
-    .filter((key) => provenance[key]).map((key) => [key.replace(/_/g, " "), String(provenance[key])]);
   fill(panel,
-    el("h2", { text: `${node.type} · ${nodeStatus(node) === "reviewed" ? "Reviewed" : "Needs review"}` }),
-    el("dl", { class: "props" }, ...props.flatMap(([key, value]) => [
-      el("dt", { text: key.replace(/_/g, " ") }), el("dd", { text: String(value) }),
-    ])),
-    node.props && node.props.variants ? el("p", { text: `Spelled ${node.props.variants.length} ways across documents; exact match keys agree.` }) : null,
-    provenanceRows.length ? el("h3", { text: "Extraction provenance" },
-      el("dl", { class: "props" }, ...provenanceRows.flatMap(([key, value]) => [
-        el("dt", { text: key }), el("dd", { text: value }),
-      ]))) : null,
-    paths.size ? el("section", {}, el("h3", { text: `Source evidence${state.graphRecordFor ? ` · ${documentName(state.graphRecordFor)}` : ""}` }),
-      evidenceRows.length ? el("ul", { class: "graph-evidence" }, ...evidenceRows)
-        : el("p", { class: "empty", text: state.graphDetailError
-          ? `Could not load source evidence: ${state.graphDetailError}`
-          : state.graphRecord ? "No field evidence was recorded for this node." : "Loading source evidence…" })) : null,
-    el("h3", { text: `Supported by ${sources.length} document(s)` }),
-    sources.length ? el("ul", { class: "support" }, ...sources.map((source) => el("li", {},
-      el("span", {}, `${documentName(source.document_id)} v${show(source.version)} `, statusPill(source.review_status)),
-      el("button", { type: "button", class: "quiet", text: "Open in review", onclick: () => {
-        switchView("review"); selectDocument(source.document_id);
-      } })))) : el("p", { class: "empty", text: "No active document support is attached." }),
+    el("h2", { text: `${node.type}` }),
+    el("dl", { class: "props" }, ...props.flatMap(([k, v]) => [el("dt", { text: k.replace(/_/g, " ") }), el("dd", { text: String(v) })])),
+    parties.length ? el("section", { class: "invoice-relations" },
+      el("h2", { text: "Parties and links" }),
+      el("ul", {}, ...parties.map(({ relation, party }) => el("li", {},
+        el("strong", { text: `${relation}: ${party.props.name || "Unknown"}` }),
+        el("span", { text: [party.props.address, party.props.tax_id ? `Tax ID ${party.props.tax_id}` : null].filter(Boolean).join(" · ") || "Party details unavailable" }))))
+    ) : null,
+    linked.size ? el("section", { class: "invoice-relations" },
+      el("h2", { text: `Connected invoices (${linked.size})` }),
+      el("ul", {}, ...[...linked.entries()].map(([relatedId, hubs]) => {
+        const related = graphNodes[relatedId];
+        const title = related ? `Invoice ${related.props.invoice_number || related.id}` : relatedId;
+        const via = hubs.map((hub) => hub.type === "ItemDescription"
+          ? `item “${hub.props.normalized_description}”` : `${hub.type.toLowerCase()} ${hub.props.name || ""}`).join("; ");
+        return el("li", {}, el("button", { type: "button", class: "quiet", text: title,
+          onclick: () => focusGraphNode(relatedId) }), el("span", { text: `Via shared ${via}` }));
+      }))
+    ) : node.type === "Invoice" ? el("p", { class: "empty", text: "No shared vendor, customer, or exact item-description hub connects this invoice yet." }) : null,
+    node.props.variants ? el("p", { text: `Spelled ${node.props.variants.length} ways across documents; exact match keys agree.` }) : null,
+    el("h2", { text: `Supported by ${node.support.length} document(s)` }),
+    el("ul", { class: "support" }, ...node.support.map((s) => el("li", {},
+      `${documentName(s.document_id)} v${show(s.version)} `, statusPill(s.review_status)))),
+    invoiceItems.length ? el("section", { class: "invoice-item-detail" },
+      el("h2", { text: `Line items (${invoiceItems.length})` }),
+      el("ul", { class: "invoice-items" }, ...invoiceItems.map((item) => el("li", {},
+        el("strong", { text: `Row ${(item.props.row_index ?? 0) + 1}: ${item.props.description || "(no description)"}` }),
+        el("span", { text: `Qty ${show(item.props.quantity)} | Net ${show(item.props.net_amount)} | Gross ${show(item.props.gross_amount)}` })))),
+    ) : null,
+    documentId ? el("button", { type: "button", text: "Open in review", onclick: () => { switchView("review"); selectDocument(documentId); } }) : null,
   );
 }
 
@@ -617,8 +978,8 @@ function documentName(id) { const doc = state.docs.find((d) => d.document_id ===
 
 function renderSuggestions(graph) {
   const items = [
-    ...graph.suggestions.map((s) => el("li", { text: `${s.reason === "same_name_different_tax_id" ? "Same name, different tax ID" : "Same tax ID, different name"}: ${s.node_ids.length} ${s.type.toLowerCase()} nodes kept separate.` })),
-    ...graph.duplicates.map((d) => el("li", { text: `Identical files: ${d.documents.map((x) => x.source_file).join(", ")}` })),
+    ...(graph.suggestions || []).map((s) => el("li", { text: `${s.reason === "same_name_different_tax_id" ? "Same name, different tax ID" : "Same tax ID, different name"}: ${s.node_ids.length} ${s.type.toLowerCase()} nodes kept separate.` })),
+    ...(graph.duplicates || []).map((d) => el("li", { text: `Identical files: ${d.documents.map((x) => x.source_file).join(", ")}` })),
   ];
   fill($("suggestions"), ...(items.length ? [el("h2", { text: "Possible duplicates to check" }), el("ul", {}, ...items)] : []));
 }
@@ -643,7 +1004,9 @@ async function loadChanges() {
 // ---------- shell ----------
 function switchView(view) {
   document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
-  ["review", "graph", "changes"].forEach((v) => { $(`view-${v}`).hidden = v !== view; });
+  ["overview", "review", "graph", "assistant", "changes"].forEach((v) => { $(`view-${v}`).hidden = v !== view; });
+  if (view === "overview") renderOverview();
+  if (view === "assistant") $("chat-question").focus();
   if (view === "graph") loadGraph();
   if (view === "changes") loadChanges();
 }
@@ -660,16 +1023,273 @@ function init() {
   $("reviewer").value = storageGet("papertrail.reviewer");
   document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
   $("refresh").addEventListener("click", loadDocuments);
+  $("doc-search").addEventListener("input", (event) => {
+    state.docSearch = event.target.value;
+    renderDocList();
+  });
   $("approve").addEventListener("click", () => submitReview("approved"));
   $("edit").addEventListener("click", () => { state.editing = true; renderDetail(); });
   $("cancel").addEventListener("click", () => { state.editing = false; renderDetail(); });
   $("save").addEventListener("click", () => submitReview("corrected"));
   $("prev-page").addEventListener("click", () => { state.page -= 1; loadPage(); });
   $("next-page").addEventListener("click", () => { state.page += 1; loadPage(); });
-  $("reviewed-only").addEventListener("change", loadGraph);
+  $("reviewed-only").addEventListener("change", () => {
+    state.graphPage = 0; state.selectedNode = null; loadGraph();
+  });
+  $("show-direct-links").addEventListener("change", renderGraph);
+  $("full-network").addEventListener("change", renderGraph);
+  ["filter-items", "filter-vendors", "filter-customers"].forEach((id) => $(id).addEventListener("change", renderGraph));
+  $("reload-graph").addEventListener("click", loadGraph);
+  $("zoom-in").addEventListener("click", () => setGraphZoom(state.graphZoom * 1.2));
+  $("zoom-out").addEventListener("click", () => setGraphZoom(state.graphZoom / 1.2));
+  $("fit-graph").addEventListener("click", () => {
+    state.graphZoom = 1; state.graphPanX = 0; state.graphPanY = 0;
+    state.graphRotationX = -.18; state.graphRotationY = .35; renderGraph();
+  });
+  $("graph-3d").addEventListener("change", (event) => {
+    state.graph3d = event.target.checked;
+    const help = $("graph-gesture-help");
+    if (help) help.textContent = state.graph3d
+      ? "Drag the background to orbit \u00b7 scroll to zoom \u00b7 select a node to inspect its neighborhood."
+      : "Drag the background to pan \u00b7 scroll to zoom \u00b7 select a node to inspect its neighborhood.";
+    renderGraph();
+  });
+  setupGraphInteractions();
+  $("graph-search-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const query = $("graph-search").value.trim().toLocaleLowerCase();
+    const graphNodes = state.graph?.nodes || [];
+    const searchable = graphNodes.filter((node) => ["Invoice", "Vendor", "Customer", "ItemDescription"].includes(node.type));
+    const valueFor = (node) => node.type === "Invoice"
+      ? [node.props.invoice_number, node.props.invoice_date].join(" ")
+      : node.type === "ItemDescription" ? node.props.normalized_description : node.props.name;
+    const match = searchable.find((node) => node.type === "Invoice" &&
+      String(node.props.invoice_number || "").toLocaleLowerCase() === query) ||
+      searchable.find((node) => String(valueFor(node) || "").toLocaleLowerCase().includes(query));
+    if (match) focusGraphNode(match.id);
+    else notify(query ? "No invoice, party, or item matched: " + $("graph-search").value.trim() : "Enter an invoice number, party, or item to search.", true);
+  });
+  $("graph-prev").addEventListener("click", () => changeGraphPage(-1));
+  $("graph-next").addEventListener("click", () => changeGraphPage(1));
+  $("sync-neo4j").addEventListener("click", syncNeo4j);
+  $("chat-form").addEventListener("submit", askGraph);
   window.addEventListener("resize", drawBoxes);
   if (!state.token) { notify("Open the review link printed by the server; it carries the access token.", true); return; }
   loadDocuments();
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+
+
+/* ---- Graph presentation enhancements ---- */
+(function () {
+  const originalRender = renderGraph;
+  renderGraph = function () { originalRender(); enhanceGraph(); };
+  const originalFocus = focusGraphNode;
+  focusGraphNode = function (id) { state.focusMode = true; originalFocus(id); };
+  function enhanceGraph() {
+    const root = $("graph-svg"); if (!root || !state.graph) return;
+    const selected = state.selectedNode;
+    const linked = new Set(selected ? [selected] : []);
+    (state.graphLayoutEdges || []).forEach((edge) => {
+      if (edge.source === selected) linked.add(edge.target);
+      if (edge.target === selected) linked.add(edge.source);
+    });
+    const focus = Boolean(state.focusMode && selected && linked.size > 1);
+    root.classList.toggle("has-focus", focus);
+    $("clear-focus").hidden = !focus;
+    root.querySelectorAll("[data-graph-node]").forEach((g) => {
+      g.classList.toggle("dim", focus && !linked.has(g.getAttribute("data-graph-node")));
+      if (g.classList.contains("invoice") && !g.querySelector(".node-status")) {
+        const ok = g.classList.contains("reviewed");
+        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("class", `node-status ${ok ? "ok" : "warn"}`);
+        dot.setAttribute("r", "4.5"); dot.setAttribute("cy", "12");
+        dot.setAttribute("cx", $("full-network").checked ? "148" : "212");
+        const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+        title.textContent = ok ? "Reviewed" : "Needs review"; dot.appendChild(title);
+        g.appendChild(dot);
+      }
+    });
+    root.querySelectorAll("[data-graph-edge]").forEach((path) => {
+      const edge = state.graphLayoutEdges[Number(path.getAttribute("data-graph-edge"))];
+      const touches = edge && (edge.source === selected || edge.target === selected);
+      path.classList.toggle("dim", focus && !touches);
+      path.classList.toggle("on", focus && touches);
+    });
+  }
+  function setPresenting(on) {
+    document.body.classList.toggle("presenting", on);
+    const button = $("present-graph");
+    button.setAttribute("aria-pressed", String(on)); button.textContent = on ? "Exit presentation" : "Present";
+    if (on) { state.graphZoom = 1; state.graphPanX = 0; state.graphPanY = 0; }
+    renderGraph();
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    $("clear-focus").addEventListener("click", () => { state.focusMode = false; renderGraph(); });
+    $("present-graph").addEventListener("click", () => setPresenting(!document.body.classList.contains("presenting")));
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && document.body.classList.contains("presenting")) setPresenting(false); });
+    $("fit-graph").addEventListener("click", () => { state.focusMode = false; renderGraph(); });
+    $("ask-about-node").addEventListener("click", askAboutSelection);
+  });
+})();
+
+/* ---- Overview + live updates ---- */
+const REVIEWED = new Set(["approved", "corrected"]);
+const ago = (iso) => {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (!Number.isFinite(s)) return "";
+  return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`;
+};
+function docBuckets() {
+  const b = { total: state.docs.length, reviewed: [], waiting: [], failed: [], inflight: [] };
+  state.docs.forEach((d) => {
+    if (d.last_error) b.failed.push(d);
+    else if (REVIEWED.has(d.review_status)) b.reviewed.push(d);
+    else if (!d.validation_status) b.inflight.push(d);
+    else b.waiting.push(d);
+  });
+  return b;
+}
+function kpi(value, label, tone) {
+  return el("div", { class: `kpi ${tone || ""}` }, el("strong", { text: Number(value).toLocaleString() }), el("span", { text: label }));
+}
+function openDocument(id) { switchView("review"); selectDocument(id); }
+function renderOverview() {
+  if (!$("ov-kpis")) return;
+  const b = docBuckets();
+  fill($("ov-kpis"), kpi(b.total, "Documents"), kpi(b.waiting.length, "Waiting for review", "warn"),
+    kpi(b.reviewed.length, "Reviewed", "ok"), kpi(b.failed.length + b.inflight.length, b.failed.length ? "Failed or processing" : "Being processed"));
+  const pct = b.total ? Math.round((b.reviewed.length / b.total) * 100) : 0;
+  fill($("ov-bar"), el("div", { class: "bar-label" }, el("strong", { text: `${pct}% reviewed` }),
+    el("span", { text: `${b.reviewed.length} of ${b.total} documents confirmed by a person` })),
+  el("div", { class: "bar-track", role: "img", "aria-label": `${pct}% of documents reviewed` },
+    el("i", { class: "seg ok", style: `width:${b.total ? (b.reviewed.length / b.total) * 100 : 0}%` }),
+    el("i", { class: "seg warn", style: `width:${b.total ? (b.waiting.length / b.total) * 100 : 0}%` }),
+    el("i", { class: "seg bad", style: `width:${b.total ? (b.failed.length / b.total) * 100 : 0}%` })));
+  $("ov-sub").textContent = b.waiting.length
+    ? `${b.waiting.length} invoice${b.waiting.length === 1 ? "" : "s"} ${b.waiting.length === 1 ? "is" : "are"} ready for a person to confirm.`
+    : b.total ? "Nothing is waiting. New invoices appear here as soon as they are read." : "No documents yet. Add files to the watched folder and they appear here.";
+  $("ov-start").disabled = !b.waiting.length;
+  fill($("ov-queue"), ...(b.waiting.length ? b.waiting.slice(0, 8).map((d) => el("li", {},
+    el("button", { type: "button", onclick: () => openDocument(d.document_id) },
+      el("span", { class: "doc-file", text: d.file || d.document_id }),
+      el("span", { class: "doc-meta" }, statusPill(d.review_status || d.file_status), " ", STATUS_TEXT[d.validation_status] || ""))))
+    : [el("li", { class: "empty", text: "Nothing waiting. Nice work." })]));
+  const rows = (state.changes || []).slice(-6).reverse();
+  fill($("ov-activity"), ...(rows.length ? rows.map((c) => el("li", {},
+    el("span", { class: "act-main", text: `${(c.action || "update").replace(/_/g, " ")}${c.document_id ? ` · ${documentName(c.document_id)}` : ""}` }),
+    el("span", { class: "doc-meta", text: ago(c.created_at) })))
+    : [el("li", { class: "empty", text: "No activity recorded yet." })]));
+}
+function setLive(ok, text) {
+  const chip = $("live-state"); chip.classList.toggle("off", !ok);
+  chip.lastElementChild.textContent = text;
+}
+async function livePoll() {
+  if (document.hidden || !state.token) return;
+  try {
+    const known = new Set(state.docs.map((d) => d.document_id));
+    const docs = await (await api("/api/documents")).json();
+    const fresh = known.size ? docs.filter((d) => !known.has(d.document_id)) : [];
+    state.docs = docs; renderDocList();
+    try { state.changes = await (await api("/api/changes")).json(); } catch (e) { /* optional */ }
+    renderOverview();
+    if (fresh.length) notify(`${fresh.length} new document${fresh.length === 1 ? "" : "s"} arrived: ${fresh.slice(0, 2).map((d) => d.file || d.document_id).join(", ")}${fresh.length > 2 ? "…" : ""}`);
+    setLive(true, `Live · updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`);
+  } catch (error) { setLive(false, "Offline · retrying"); }
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const original = loadDocuments;
+  loadDocuments = async function () { await original(); renderOverview(); };
+  $("ov-refresh").addEventListener("click", livePoll);
+  $("ov-start").addEventListener("click", () => { const d = docBuckets().waiting[0]; if (d) openDocument(d.document_id); });
+  setLive(false, state.token ? "Connecting" : "No access token");
+  if (state.token) { livePoll(); setInterval(livePoll, 10000); }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) livePoll(); });
+});
+
+/* ---- Assistant (conversation page) ---- */
+function chatEmpty() {
+  return el("div", { class: "chat-empty" }, el("h3", { text: "What would you like to know?" }),
+    el("p", { text: "Ask about an invoice, a vendor or customer, shared items, or why two invoices are linked." }));
+}
+function addTyping() {
+  const row = el("div", { class: "msg assistant typing", "aria-label": "Assistant is answering" },
+    el("div", { class: "msg-body" }, el("span", { class: "dots" }, el("i"), el("i"), el("i"))));
+  $("chat-messages").append(row); $("chat-messages").scrollTop = $("chat-messages").scrollHeight; return row;
+}
+async function openInGraph(id) {
+  switchView("graph"); await loadGraph(); focusGraphNode(id);
+}
+function addChatMessage(role, text, sources = [], isError = false, note = "") {
+  const box = $("chat-messages");
+  box.querySelector(".chat-empty")?.remove();
+  const paragraphs = String(text).split(/\n{2,}/).map((p) => el("p", { text: p }));
+  const chips = sources.map((source) => {
+    const label = source.invoice_number ? `Invoice ${source.invoice_number}` : source.filename || `${source.type} ${source.id}`;
+    const reviewed = REVIEWED.has(source.review_status);
+    return el("button", { type: "button", class: "chip", title: `Open ${label} in the graph`, onclick: () => openInGraph(source.id) },
+      el("i", { class: `dot ${reviewed ? "ok" : "warn"}` }), label);
+  });
+  const foot = role === "assistant" && !isError ? el("div", { class: "msg-foot" }, note ? el("span", { text: note }) : null,
+    el("button", { type: "button", class: "quiet", text: "Copy", onclick: (ev) => {
+      navigator.clipboard?.writeText(text).then(() => { ev.target.textContent = "Copied"; setTimeout(() => { ev.target.textContent = "Copy"; }, 1500); }).catch(() => {});
+    } })) : null;
+  box.append(el("div", { class: `msg ${role}${isError ? " error" : ""}` },
+    el("div", { class: "msg-body" }, ...paragraphs),
+    chips.length ? el("div", { class: "msg-sources" }, el("span", { text: "Sources" }), ...chips) : null, foot));
+  while (box.children.length > 60) box.firstElementChild.remove();
+  box.scrollTop = box.scrollHeight;
+}
+async function askGraph(event) {
+  event.preventDefault();
+  const input = $("chat-question"), question = input.value.trim();
+  if (!question || state.asking) return;
+  input.value = ""; input.style.height = "auto";
+  addChatMessage("user", question);
+  state.asking = true;
+  const button = $("chat-form").querySelector("button[type=submit]"); button.disabled = true;
+  const typing = addTyping();
+  try {
+    const result = await (await api("/api/graph-rag", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, generate: $("chat-use-llm").checked,
+        include_unreviewed: !$("chat-reviewed-only").checked, limit: 8 }),
+    })).json();
+    typing.remove();
+    const answer = result.context_truncated
+      ? `${result.answer}\n\nSome matching connections were omitted by the retrieval limit, so treat lists and totals as partial.` : result.answer;
+    const note = result.answer_mode === "hosted_cached" ? "Reused a cached answer"
+      : result.answer_mode === "local_budget_fallback" ? "Hosted limit reached; answered from graph facts"
+        : result.answer_mode === "hosted" ? "Written by hosted AI from retrieved facts" : "Answered from graph facts";
+    addChatMessage("assistant", answer, result.sources || [], false, note);
+    if (result.llm_call_limit !== undefined) {
+      $("chat-call-status").textContent = `Hosted answers this hour: ${result.llm_call_limit - result.llm_calls_remaining} of ${result.llm_call_limit} used.`;
+    }
+  } catch (error) {
+    typing.remove(); addChatMessage("assistant", `${error.message}. Check that the review server and graph database are running, then try again.`, [], true);
+  } finally { state.asking = false; button.disabled = false; input.focus(); }
+}
+function askAboutSelection() {
+  const node = state.graph?.nodes.find((n) => n.id === state.selectedNode); if (!node) return;
+  const q = node.type === "Invoice" ? `Why is invoice ${node.props.invoice_number} connected to other invoices?`
+    : node.type === "Vendor" ? `Which invoices were issued by ${node.props.name}?`
+      : node.type === "Customer" ? `Which invoices were billed to ${node.props.name}?`
+        : `Which invoices share the item "${node.props.normalized_description}"?`;
+  switchView("assistant"); $("chat-question").value = q; $("chat-form").requestSubmit();
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const box = $("chat-messages"), input = $("chat-question");
+  box.replaceChildren(chatEmpty());
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 160)}px`; });
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $("chat-form").requestSubmit(); }
+  });
+  $("chat-clear").addEventListener("click", () => { box.replaceChildren(chatEmpty()); input.focus(); });
+  document.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-question]"); if (!b) return;
+    switchView("assistant"); input.value = b.dataset.question; $("chat-form").requestSubmit();
+  });
+});

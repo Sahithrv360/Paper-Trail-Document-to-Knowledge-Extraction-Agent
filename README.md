@@ -4,7 +4,9 @@ Paper Trail is a capstone project focused on extracting structured, evidence-bac
 
 Instead of treating OCR or PDF text extraction as the final result, the system aims to identify entities, relationships, and business facts, connect them to existing master records only when supported by evidence, and flag ambiguous cases for human review.
 
-> **Project status:** The local pipeline supports bounded image/PDF input, Tesseract or RapidOCR extraction, Donut, and an explicitly opt-in vision API; it validates evidence, stores versioned records in a SQLite ledger, syncs a deterministic graph, and provides a local review page and benchmark harness. The 147-test suite passes here (2 optional Tesseract tests skipped); dataset accuracy has not been evaluated. See [`docs/MILESTONES_REPORT.md`](./docs/MILESTONES_REPORT.md) for scope and limits.
+> **Project status:** The local pipeline supports bounded image/PDF input, Tesseract or RapidOCR extraction, Donut, and an explicitly opt-in vision API; it validates evidence, stores versioned records in a SQLite ledger, syncs a deterministic graph, and provides a local review page and benchmark harness. Run `python -m unittest discover -s backend/tests -v` for current checks; OCR accuracy on a labelled project-specific set is still unverified. See [`docs/MILESTONES_REPORT.md`](./docs/MILESTONES_REPORT.md) for scope and limits.
+
+For GPU-laptop setup, current implementation status, and remaining work, see [`GPU_TRANSFER_GUIDE.md`](./GPU_TRANSFER_GUIDE.md).
 
 ## Problem Statement
 
@@ -37,7 +39,7 @@ The planned processing pipeline is:
 9. Structured result storage and presentation.
 10. Evaluation and observability.
 
-See [`architechture.png`](./architechture.png) for the initial architecture image. The diagram should be reviewed and updated to reflect the implemented system.
+See the editable [current system architecture](./docs/system_architecture.drawio) for the implemented intake, extraction, review, graph, and question-answering flows. The [Graph RAG message flow](./docs/graph_rag_message_flow.drawio) gives a closer view of question planning and retrieval. `architechture.png` is the original high-level image.
 
 ## Planned Technology Stack
 
@@ -66,7 +68,10 @@ Paper-Trail-Document-to-Knowledge-Extraction-Agent/
 ├── README.md
 ├── APPROACH.md
 ├── ARTEFACT.md
-├── architechture.png
+├── architechture.png                 # original architecture image
+├── docs/
+│   ├── system_architecture.drawio    # current editable architecture
+│   └── graph_rag_message_flow.drawio # question-to-answer flow
 ├── docs/
 │   └── functional.md
 ├── src/
@@ -171,6 +176,46 @@ python -m backend.app.review.server
 ```
 
 The review server binds to `127.0.0.1`; keep its one-time link private. Copy `.env.example` to `.env` to configure limits and providers. Queue-only remains the default. For labeled evaluation, use `backend.app.extraction.benchmark` and the validation split first; reserve the test split for a frozen, one-time final run. See [`docs/EVALUATION.md`](./docs/EVALUATION.md) and [`docs/DATA_HANDLING.md`](./docs/DATA_HANDLING.md). No accuracy improvement is established until that evaluation runs.
+
+### Neo4j graph view and Graph RAG
+
+SQLite remains the source of truth. Neo4j receives a rebuildable graph projection. The sync also creates direct `SAME_VENDOR_AS`, `SAME_CUSTOMER_AS`, and `SAME_ITEM_DESCRIPTION_AS` invoice links when two invoices share a party node or an exact normalized item description. These links identify the shared basis; an item-description match does not claim the products are identical. No SQLite migration is needed: rerun sync after importing or reviewing invoices.
+
+For the local Docker database, check that the container is running and its ports are published (`7474` for Browser and `7687` for Bolt). If `.env` does not exist, copy `.env.example` to `.env`; then set `NEO4J_URI=bolt://127.0.0.1:7687`, `NEO4J_USERNAME=neo4j`, and `NEO4J_PASSWORD` to the password you set for the local container. Keep `.env` private. Install the optional driver and import the SQLite graph:
+
+```powershell
+python -m pip install -r backend/requirements-neo4j.txt
+python -m backend.app.neo4j_sync
+```
+
+The sync is repeatable and imports only the application's known node and relationship types. Add `--reviewed-only` to project only approved/corrected facts. Open Neo4j Browser at `http://localhost:7474` and try `MATCH (n:PaperTrail) RETURN n LIMIT 100`.
+
+To inspect invoice-to-invoice links in Neo4j Browser, run `MATCH (a:PaperTrail:Invoice)-[r]->(b:PaperTrail:Invoice) RETURN a,r,b`. To rebuild after new extractions, reviews, or corrections, run `python -m backend.app.neo4j_sync` again. In the Paper Trail Graph view, use **Sync Neo4j** after starting the review server; search for an invoice, party, or item, then select a node to inspect its connected neighborhood and supporting facts.
+
+Start the combined graph and chat review UI with:
+
+```powershell
+python -m backend.app.review.server
+```
+
+The Graph view and chat use the SQLite graph, so they remain available when Neo4j is stopped. Neo4j is an optional projection for exploration. Retrieval is bounded, read-only, and reviewed-only by default. First inspect retrieved context without making an API call:
+
+```powershell
+python -m backend.app.graph_rag "Which invoices were issued by Acme Books?"
+```
+
+For a repeatable local demo, reset and seed the isolated fictional presenter graph, then score its 15 deterministic connection questions:
+
+```powershell
+python -m backend.app.demo
+python -m backend.app.evaluate_graph_rag
+```
+
+The scorer defaults to `presentation_data/runtime/paper_trail_graph.sqlite3`; it does not touch the live graph. Its 15/15 result checks deterministic answers on synthetic records only and is not an invoice extraction accuracy result.
+
+For local graph chat through Ollama, install a model you want to use, then set `GRAPH_RAG_BACKEND=ollama`, `GRAPH_RAG_MODEL=<installed-model-name>`, and `OLLAMA_HOST=http://127.0.0.1:11434`. Select **Use configured model** in the chat panel. Calls stay on loopback, are capped at 10 per hour, and repeat questions use the cache. The model cannot write to the graph.
+
+To use Anthropic instead, configure `GRAPH_RAG_API_KEY` and `GRAPH_RAG_MODEL`, set `GRAPH_RAG_BACKEND=anthropic`, and explicitly set `PAPERTRAIL_ALLOW_GRAPH_RAG_REMOTE=I_ACCEPT_GRAPH_DATA_LEAVES_THIS_DEVICE`. Only retrieved graph facts are sent to the hosted API. Hosted generation remains off by default.
 
 ## Example Expected Behaviour
 

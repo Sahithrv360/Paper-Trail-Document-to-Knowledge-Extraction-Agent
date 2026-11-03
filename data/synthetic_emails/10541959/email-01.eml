@@ -1,0 +1,22 @@
+From: Alvarez-Woods <billing+4@alvarez-woods.invalid>
+To: Smith-Haynes <ap+4@smith-haynes.invalid>
+Date: Mon, 19 Oct 2026 09:00:00 +0000
+Subject: [SYNTHETIC DEMO] Invoice 10541959: Invoice shared for reconciliation
+Message-ID:
+ <ba18b2a3-a3c2-4cd5-a727-6b38b12920d7-01@papertrail-synthetic.invalid>
+X-Synthetic-Demo: true
+X-Source-Classification: fictional-not-evidence
+X-Related-Invoice: 10541959
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+SYNTHETIC DEMO EMAIL =E2=80=94 fictional correspondence generated for graph a=
+nd agent testing. It is not a real communication, not payment or delivery evi=
+dence, and must not be treated as a verified business event.
+
+Hello Smith-Haynes,
+
+Please review synthetic invoice 10541959 and confirm it is routed to the corr=
+ect accounts-payable queue. This is a fictional training conversation; no rea=
+l invoice is attached.

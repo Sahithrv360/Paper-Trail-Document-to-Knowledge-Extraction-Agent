@@ -1,0 +1,26 @@
+From: "Shaw, Williams and Johnston" <ap+5@shaw-williams-and-johnston.invalid>
+To: Hughes-Jones <billing+5@hughes-jones.invalid>
+Date: Tue, 03 Nov 2026 09:00:00 +0000
+Subject: [SYNTHETIC DEMO] Invoice 10817861: Re: Purchase-order match
+Message-ID:
+ <c337bf74-0ed8-490c-a5b4-260cacd69be6-04@papertrail-synthetic.invalid>
+X-Synthetic-Demo: true
+X-Source-Classification: fictional-not-evidence
+X-Related-Invoice: 10817861
+In-Reply-To:
+ <c337bf74-0ed8-490c-a5b4-260cacd69be6-03@papertrail-synthetic.invalid>
+References:
+ <c337bf74-0ed8-490c-a5b4-260cacd69be6-03@papertrail-synthetic.invalid>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+SYNTHETIC DEMO EMAIL =E2=80=94 fictional correspondence generated for graph a=
+nd agent testing. It is not a real communication, not payment or delivery evi=
+dence, and must not be treated as a verified business event.
+
+Hello Hughes-Jones,
+
+Our synthetic AP scenario shows the PO reference is not visible in the initia=
+l email. Please provide a demo reference so we can exercise the matching work=
+flow. No real PO is being asserted.

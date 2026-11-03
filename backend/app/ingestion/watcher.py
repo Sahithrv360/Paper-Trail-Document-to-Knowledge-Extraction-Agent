@@ -14,6 +14,8 @@ class FolderWatcher:
         self.max_file_bytes = max_file_bytes
         self.supported_suffixes = {suffix.lower() for suffix in supported_suffixes}
         self._signatures = {}
+        self._hash_cache = {}
+        self._observed = {}
 
     def scan_once(self) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -35,17 +37,29 @@ class FolderWatcher:
                 current_signatures[canonical] = signature
                 if self._signatures.get(canonical) != signature:
                     continue
-                content_hash = self.registry.hash_file(resolved)
+                if self._observed.get(canonical) == signature:
+                    continue
+                cached = self._hash_cache.get(canonical)
+                content_hash = (cached[1] if cached and cached[0] == signature
+                                else self.registry.hash_file(resolved))
                 after = resolved.stat()
                 if (after.st_size, after.st_mtime_ns) != signature:
                     current_signatures.pop(canonical, None)
+                    self._hash_cache.pop(canonical, None)
+                    self._observed.pop(canonical, None)
                     continue
                 self.registry.observe(resolved, content_hash)
+                self._hash_cache[canonical] = (signature, content_hash)
+                self._observed[canonical] = signature
             except (OSError, ValueError):
                 # The file may still be moving, writing, or may be an escaping link.
                 continue
         self.registry.mark_missing(live_paths)
         self._signatures = current_signatures
+        self._hash_cache = {path: value for path, value in self._hash_cache.items()
+                            if current_signatures.get(path) == value[0]}
+        self._observed = {path: signature for path, signature in self._observed.items()
+                          if current_signatures.get(path) == signature}
 
     def run_forever(self, interval_seconds: float) -> None:
         while True:

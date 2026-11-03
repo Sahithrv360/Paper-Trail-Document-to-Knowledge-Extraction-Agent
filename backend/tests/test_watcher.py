@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend.app.ingestion.registry import DocumentRegistry
 from backend.app.ingestion.watcher import FolderWatcher
@@ -28,6 +29,19 @@ class FolderWatcherTests(unittest.TestCase):
         self.watcher.scan_once()
         self.assertEqual(len(self.registry.documents()), 1)
         self.assertEqual(len(self.registry.jobs()), 1)
+
+    def test_stable_unchanged_files_are_hashed_and_observed_only_once(self):
+        self.input.mkdir()
+        invoice = self.input / "one.pdf"
+        invoice.write_bytes(b"invoice")
+        with mock.patch.object(self.registry, "hash_file",
+                               wraps=self.registry.hash_file) as hash_file, \
+                mock.patch.object(self.registry, "observe",
+                                  wraps=self.registry.observe) as observe:
+            for _ in range(6):
+                self.watcher.scan_once()
+        self.assertEqual(hash_file.call_count, 1)
+        self.assertEqual(observe.call_count, 1)
         self.watcher.scan_once()
         self.assertEqual(len(self.registry.jobs()), 1)
 

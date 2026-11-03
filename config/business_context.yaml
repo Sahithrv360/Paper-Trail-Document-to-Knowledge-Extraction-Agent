@@ -1,0 +1,17 @@
+domain: "Supplier contracts and procurement"
+audience: "Procurement managers and finance analysts"
+goals:
+  - "Answer business questions with cited evidence"
+  - "Prefer precision over guessing"
+glossary:
+  MSA: "Master Service Agreement"
+  SLA: "Service Level Agreement"
+kpis:
+  - "contract value"
+  - "renewal date"
+  - "supplier risk"
+answer_style: "Concise, business-friendly, numbers with units, always cite sources"
+examples:
+  - question: "Which suppliers have contracts expiring in Q1 2026?"
+    plan_hint: "Graph: Supplier -[HAS_CONTRACT]-> Contract; filter end_date; inspect contract evidence."
+    ideal_answer: "List only suppliers whose cited contract evidence shows an end date in Q1 2026."

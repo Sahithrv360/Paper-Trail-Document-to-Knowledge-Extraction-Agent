@@ -20,12 +20,15 @@ Security model (single local user):
 """
 
 import argparse
+import hashlib
 import hmac
 import json
 import mimetypes
+import os
 import secrets
 import threading
-from collections import OrderedDict
+import time
+from collections import OrderedDict, deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,10 +58,20 @@ class ReviewError(Exception):
 class ReviewService:
     """The data operations behind the HTTP layer (also usable directly in tests)."""
 
-    def __init__(self, graph, registry=None, settings=None):
+    def __init__(self, graph, registry=None, settings=None, neo4j_driver=None,
+                 neo4j_database=None, answer_provider_factory=None):
         self.graph, self.registry, self.settings = graph, registry, settings
+        self.neo4j_driver, self.neo4j_database = neo4j_driver, neo4j_database
+        self.answer_provider_factory = answer_provider_factory
         self._page_cache = OrderedDict()
         self._cache_lock = threading.Lock()
+        try:
+            self._graph_llm_limit = max(0, int(os.getenv("GRAPH_RAG_MAX_CALLS_PER_HOUR", "10")))
+        except ValueError:
+            self._graph_llm_limit = 10
+        self._graph_llm_calls = deque()
+        self._graph_answer_cache = OrderedDict()
+        self._graph_llm_lock = threading.Lock()
 
     # -- reads -----------------------------------------------------------------------
 
@@ -155,8 +168,163 @@ class ReviewService:
 
     def graph_export(self, reviewed_only: bool) -> dict:
         export = self.graph.export(reviewed_only=reviewed_only)
+        # Keep the graph view useful if Neo4j is offline or its projection is stale.
+        # These deterministic links are a read-only presentation projection; SQLite
+        # remains the source of truth and the Neo4j sync button can rebuild its copy.
+        from ..neo4j_sync import derive_direct_invoice_relationships, derive_shared_item_hubs
+        hub_nodes, hub_edges = derive_shared_item_hubs(export)
+        direct_edges = derive_direct_invoice_relationships(export, hub_nodes, hub_edges)
+        export = {**export, "nodes": [*export["nodes"], *hub_nodes],
+                  "edges": [*export["edges"], *hub_edges, *direct_edges]}
         return {**export, "suggestions": self.graph.entity_suggestions(),
                 "duplicates": self.graph.duplicate_content_groups()}
+
+    def neo4j_graph_export(self, reviewed_only: bool) -> dict:
+        if self.neo4j_driver is None:
+            raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE,
+                              "Neo4j is not configured; set NEO4J_URI and NEO4J_PASSWORD")
+        from ..neo4j_sync import export_neo4j_graph
+        return export_neo4j_graph(self.neo4j_driver, self.neo4j_database, reviewed_only)
+
+    def sync_neo4j(self, reviewed_only: bool) -> dict:
+        if self.neo4j_driver is None:
+            raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE,
+                              "Neo4j is not configured; set NEO4J_URI and NEO4J_PASSWORD")
+        from ..neo4j_sync import sync_graph_export
+        result = sync_graph_export(self.graph.export(reviewed_only=reviewed_only),
+                                   self.neo4j_driver, self.neo4j_database)
+        result["reviewed_only"] = reviewed_only
+        return result
+
+    def ask_graph(self, question: str, generate: bool = False,
+                  include_unreviewed: bool = False, limit: int = 8) -> dict:
+        normalized_question = " ".join(question.casefold().split())
+        if "why" in normalized_question and any(
+                term in normalized_question for term in ("connect", "connection", "linked")):
+            from ..graph_rag import explain_invoice_connections
+            result = explain_invoice_connections(self.graph, question, include_unreviewed)
+            with self._graph_llm_lock:
+                now = time.monotonic()
+                while self._graph_llm_calls and now - self._graph_llm_calls[0] >= 3600:
+                    self._graph_llm_calls.popleft()
+                calls_used = len(self._graph_llm_calls)
+                calls_remaining = max(0, self._graph_llm_limit - calls_used)
+            return {"answer": result["answer"], "sources": result["sources"],
+                    "retrieval_count": len(result["links"]),
+                    "context_truncated": result["context_truncated"],
+                    "reviewed_only": result["reviewed_only"],
+                    "excluded_unreviewed": result["excluded_unreviewed"],
+                    "answer_mode": "local_sqlite_deterministic",
+                    "retrieval_backend": "sqlite",
+                    "llm_calls_used": calls_used, "llm_calls_remaining": calls_remaining,
+                    "llm_call_limit": self._graph_llm_limit,
+                    "links": result["links"]}
+        from ..graph_rag import (GraphAnswerProvider, Neo4jRetriever,
+                                 SQLiteGraphRetriever, summarize_graph_facts)
+        retrieval_backend = "neo4j" if self.neo4j_driver is not None else "sqlite"
+        retriever = (Neo4jRetriever(self.neo4j_driver, self.neo4j_database)
+                     if self.neo4j_driver is not None else SQLiteGraphRetriever(self.graph))
+        retrieved = retriever.retrieve(question, limit=limit,
+                                       reviewed_only=not include_unreviewed)
+        if self.neo4j_driver is not None:
+            # Keep synthetic demo threads available to RAG even before the optional
+            # Neo4j projection has been refreshed from the SQLite source of truth.
+            local_retrieved = SQLiteGraphRetriever(self.graph).retrieve(
+                question, limit=limit, reviewed_only=not include_unreviewed)
+            if any((match.get("node") or {}).get("synthetic") is True
+                   for match in local_retrieved.get("matches", [])):
+                retrieved = local_retrieved
+                retrieval_backend = "sqlite+synthetic-demo"
+        answer_cached = False
+        budget_fallback = False
+        provider_mode = os.environ.get("GRAPH_RAG_BACKEND", "anthropic").strip().lower()
+        if provider_mode not in ("anthropic", "ollama"):
+            provider_mode = "hosted"
+        answer_model = (os.environ.get("GRAPH_RAG_MODEL") or
+                        os.environ.get("OLLAMA_MODEL", "") if provider_mode == "ollama" else
+                        os.environ.get("GRAPH_RAG_MODEL") or
+                        os.environ.get("VISION_API_MODEL", ""))
+        if generate and retrieved.get("matches"):
+            cache_matches = []
+            for match in retrieved["matches"]:
+                canonical = dict(match)
+                canonical["links"] = sorted(match.get("links") or [],
+                                             key=lambda link: link.get("relationship_id") or "")
+                cache_matches.append(canonical)
+            cache_payload = json.dumps({"question": " ".join(question.split()).casefold(),
+                                        "matches": cache_matches,
+                                        "sources": retrieved["sources"],
+                                        "reviewed_only": retrieved["reviewed_only"],
+                                        "provider": provider_mode, "model": answer_model},
+                                       sort_keys=True, ensure_ascii=False, default=str)
+            cache_key = hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
+            with self._graph_llm_lock:
+                answer = self._graph_answer_cache.get(cache_key)
+                if answer is not None:
+                    self._graph_answer_cache.move_to_end(cache_key)
+                    answer_cached = True
+            if answer is None:
+                now = time.monotonic()
+                with self._graph_llm_lock:
+                    while self._graph_llm_calls and now - self._graph_llm_calls[0] >= 3600:
+                        self._graph_llm_calls.popleft()
+                    budget_exhausted = (self._graph_llm_limit == 0 or
+                                        len(self._graph_llm_calls) >= self._graph_llm_limit)
+                if budget_exhausted:
+                    answer = summarize_graph_facts(retrieved)
+                    budget_fallback = True
+                else:
+                    settings = self.settings
+                    if settings is None:
+                        from ..config import Settings
+                        settings = Settings.from_env()
+                    try:
+                        factory = self.answer_provider_factory or GraphAnswerProvider
+                        provider = factory(settings)
+                    except RuntimeError as exc:
+                        raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
+                    with self._graph_llm_lock:
+                        now = time.monotonic()
+                        while self._graph_llm_calls and now - self._graph_llm_calls[0] >= 3600:
+                            self._graph_llm_calls.popleft()
+                        if self._graph_llm_limit == 0 or len(self._graph_llm_calls) >= self._graph_llm_limit:
+                            budget_exhausted = True
+                        else:
+                            self._graph_llm_calls.append(now)
+                    if budget_exhausted:
+                        answer = summarize_graph_facts(retrieved)
+                        budget_fallback = True
+                    else:
+                        try:
+                            answer = provider.answer(question, retrieved)
+                        except RuntimeError as exc:
+                            raise ReviewError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
+                        with self._graph_llm_lock:
+                            self._graph_answer_cache[cache_key] = answer
+                            self._graph_answer_cache.move_to_end(cache_key)
+                            while len(self._graph_answer_cache) > 64:
+                                self._graph_answer_cache.popitem(last=False)
+                        retrieved["context_truncated"] = (retrieved.get("context_truncated", False)
+                                                           or getattr(provider, "context_truncated", False))
+        else:
+            answer = summarize_graph_facts(retrieved)
+        with self._graph_llm_lock:
+            now = time.monotonic()
+            while self._graph_llm_calls and now - self._graph_llm_calls[0] >= 3600:
+                self._graph_llm_calls.popleft()
+            calls_used = len(self._graph_llm_calls)
+            calls_remaining = max(0, self._graph_llm_limit - calls_used)
+        answer_mode = (f"{provider_mode}_cached" if answer_cached else
+                       "local_budget_fallback" if budget_fallback else
+                       provider_mode if generate and retrieved.get("matches") else "local")
+        return {"answer": answer, "sources": retrieved["sources"],
+                "retrieval_count": len(retrieved["matches"]),
+                "context_truncated": bool(retrieved.get("context_truncated")),
+                "reviewed_only": retrieved["reviewed_only"],
+                "answer_mode": answer_mode,
+                "retrieval_backend": retrieval_backend,
+                "llm_calls_used": calls_used, "llm_calls_remaining": calls_remaining,
+                "llm_call_limit": self._graph_llm_limit}
 
     # -- writes ----------------------------------------------------------------------
 
@@ -272,6 +440,9 @@ def make_handler(service: ReviewService, token: str):
                 if parts == ["graph"]:
                     reviewed = query.get("reviewed_only", ["0"])[0] in ("1", "true")
                     return self._json(HTTPStatus.OK, service.graph_export(reviewed))
+                if parts == ["neo4j", "graph"]:
+                    reviewed = query.get("reviewed_only", ["0"])[0] in ("1", "true")
+                    return self._json(HTTPStatus.OK, service.neo4j_graph_export(reviewed))
                 if parts == ["changes"]:
                     return self._json(HTTPStatus.OK, service.graph.changes())
                 return self._error(HTTPStatus.NOT_FOUND, "Not found")
@@ -287,8 +458,6 @@ def make_handler(service: ReviewService, token: str):
             if not self._guard(api=True):
                 return
             content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if content_type != "application/json":
-                return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send application/json")
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
@@ -304,17 +473,47 @@ def make_handler(service: ReviewService, token: str):
                     remaining -= len(chunk)
                 self.close_connection = True
                 return self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Body exceeds 1 MB")
+            body = self.rfile.read(length)
+            if content_type != "application/json":
+                return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send application/json")
             try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8") or "null")
+                payload = json.loads(body.decode("utf-8") or "null")
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return self._error(HTTPStatus.BAD_REQUEST, "Body is not valid JSON")
+            if not isinstance(payload, dict):
+                return self._error(HTTPStatus.BAD_REQUEST, "Body must be a JSON object")
             parts = [part for part in route.split("/") if part][1:]
             try:
                 if len(parts) == 3 and parts[0] == "documents" and parts[2] == "review":
                     return self._json(HTTPStatus.OK, service.review(parts[1], payload))
+                if parts == ["neo4j", "sync"]:
+                    reviewed_only = payload.get("reviewed_only", False)
+                    if not isinstance(reviewed_only, bool):
+                        return self._error(HTTPStatus.BAD_REQUEST, "reviewed_only must be boolean")
+                    return self._json(HTTPStatus.OK, service.sync_neo4j(
+                        reviewed_only))
+                if parts == ["graph-rag"]:
+                    question = payload.get("question")
+                    if not isinstance(question, str) or not question.strip():
+                        return self._error(HTTPStatus.BAD_REQUEST, "question must be non-empty text")
+                    generate = payload.get("generate", False)
+                    include_unreviewed = payload.get("include_unreviewed", False)
+                    limit = payload.get("limit", 8)
+                    if not isinstance(generate, bool) or not isinstance(include_unreviewed, bool):
+                        return self._error(HTTPStatus.BAD_REQUEST,
+                                           "generate and include_unreviewed must be boolean")
+                    if not isinstance(limit, int) or isinstance(limit, bool):
+                        return self._error(HTTPStatus.BAD_REQUEST, "limit must be an integer")
+                    return self._json(HTTPStatus.OK, service.ask_graph(
+                        question, generate=generate,
+                        include_unreviewed=include_unreviewed, limit=limit))
                 return self._error(HTTPStatus.NOT_FOUND, "Not found")
             except ReviewError as exc:
                 return self._error(exc.status, exc.message)
+            except ValueError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            except Exception as exc:  # do not return provider or database details to the browser
+                return self._error(HTTPStatus.BAD_GATEWAY, f"{type(exc).__name__}")
 
         def do_HEAD(self):
             self.do_GET()
@@ -343,8 +542,14 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=int(os.getenv("REVIEW_PORT", "8765")))
     parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "::1", "localhost"])
     args = parser.parse_args(argv)
-    service = ReviewService(GraphStore(GRAPH_PATH), DocumentRegistry(DATABASE_PATH),
-                            Settings.from_env())
+    settings = Settings.from_env()
+    neo4j_driver = None
+    if os.getenv("NEO4J_URI") and os.getenv("NEO4J_PASSWORD"):
+        from ..neo4j_sync import create_driver
+        neo4j_driver = create_driver()
+    service = ReviewService(GraphStore(GRAPH_PATH), DocumentRegistry(DATABASE_PATH), settings,
+                            neo4j_driver=neo4j_driver,
+                            neo4j_database=os.getenv("NEO4J_DATABASE") or None)
     server = create_server(service, args.host, args.port, os.getenv("REVIEW_TOKEN") or None)
     host = f"[{args.host}]" if ":" in args.host else args.host
     print(f"Paper Trail review: http://{host}:{server.server_address[1]}/#token={server.review_token}")
@@ -355,6 +560,8 @@ def main(argv=None):
         pass
     finally:
         server.server_close()
+        if neo4j_driver is not None:
+            neo4j_driver.close()
 
 
 if __name__ == "__main__":

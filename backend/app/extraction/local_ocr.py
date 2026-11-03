@@ -106,8 +106,8 @@ class TesseractEngine:
     name = "tesseract"
 
     def __init__(self, command: str = "tesseract", language: str = "eng",
-                 timeout_seconds: float = 120.0):
-        self.command, self.language, self.timeout = command, language, timeout_seconds
+                 timeout_seconds: float = 120.0, psm: int = 3):
+        self.command, self.language, self.timeout, self.psm = command, language, timeout_seconds, psm
         resolved = shutil.which(command) or (command if os.path.isfile(command) else None)
         if resolved is None and os.name == "nt" and command.lower() in ("tesseract", "tesseract.exe"):
             # The UB Mannheim installer may not refresh PATH in existing terminals (or
@@ -139,7 +139,7 @@ class TesseractEngine:
         env = dict(os.environ, OMP_THREAD_LIMIT="1")
         try:
             out = subprocess.run([self.binary, "stdin", "stdout", "-l", self.language,
-                                  "--psm", "3", "tsv"], input=png_bytes,
+                                  "--psm", str(self.psm), "tsv"], input=png_bytes,
                                  capture_output=True, timeout=self.timeout, env=env)
         except subprocess.TimeoutExpired as exc:
             raise OcrTimeout(f"Tesseract exceeded {self.timeout:g}s") from exc
@@ -193,24 +193,73 @@ def _merge(words: list) -> dict:
             "conf": round(sum(w["conf"] for w in words) / len(words), 4)}
 
 
-def _rapidocr_worker(png_bytes, connection):
+def _rapidocr_worker(connection):
     try:
         import io
         import numpy
         from PIL import Image
+        import onnxruntime
+        if os.environ.get("RAPIDOCR_USE_CUDA", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            onnxruntime.preload_dlls(directory="")
+            from pathlib import Path
+            import rapidocr_onnxruntime
+            from rapidocr_onnxruntime.utils import (
+                OrtInferSession, concat_model_path, read_yaml,
+            )
+            config_path = Path(rapidocr_onnxruntime.__file__).parent / "config.yaml"
+            config = concat_model_path(read_yaml(config_path))
+            config["Cls"]["use_cuda"] = True
+            config["Rec"]["use_cuda"] = True
+        else:
+            config = None
         from rapidocr_onnxruntime import RapidOCR
-        with Image.open(io.BytesIO(png_bytes)) as opened:
-            array = numpy.asarray(opened.convert("RGB"))[:, :, ::-1]  # RGB -> BGR
-        result, _elapsed = RapidOCR()(array)
-        fragments = []
-        for box, text, score in result or []:
-            xs, ys = [p[0] for p in box], [p[1] for p in box]
-            fragments.append({"text": str(text).strip(),
-                              "bbox": [float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))],
-                              "conf": round(float(score), 4)})
-        connection.send(("ok", fragments))
+        use_cuda = os.environ.get("RAPIDOCR_USE_CUDA", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        engine = RapidOCR(det_use_cuda=use_cuda, det_model_path=None,
+                          cls_use_cuda=use_cuda, cls_model_path=None,
+                          rec_use_cuda=use_cuda, rec_model_path=None)
+        if use_cuda:
+            # rapidocr_onnxruntime's kwargs updater does not strip the cls_/rec_
+            # prefixes from use_cuda, so enable those two sessions explicitly.
+            engine.text_cls.infer = OrtInferSession(config["Cls"])
+            engine.text_recognizer.session = OrtInferSession(config["Rec"])
+            providers = {
+                "det": engine.text_detector.infer.session.get_providers(),
+                "cls": engine.text_cls.infer.session.get_providers(),
+                "rec": engine.text_recognizer.session.session.get_providers(),
+            }
+            print(f"RapidOCR execution providers: {providers}", flush=True)
+        connection.send(("ready", None))
     except Exception as exc:  # reported to the parent process
-        connection.send(("error", f"{type(exc).__name__}: {exc}"))
+        try:
+            connection.send(("fatal", f"{type(exc).__name__}: {exc}"))
+        finally:
+            connection.close()
+        return
+    try:
+        while True:
+            png_bytes = connection.recv()
+            if png_bytes is None:
+                break
+            try:
+                with Image.open(io.BytesIO(png_bytes)) as opened:
+                    array = numpy.asarray(opened.convert("RGB"))[:, :, ::-1]  # RGB -> BGR
+                result, _elapsed = engine(array)
+                fragments = []
+                for box, text, score in result or []:
+                    xs, ys = [p[0] for p in box], [p[1] for p in box]
+                    fragments.append({"text": str(text).strip(),
+                                      "bbox": [float(min(xs)), float(min(ys)),
+                                               float(max(xs)), float(max(ys))],
+                                      "conf": round(float(score), 4)})
+                connection.send(("ok", fragments))
+            except Exception as exc:  # a bad page should not force a model reload
+                connection.send(("error", f"{type(exc).__name__}: {exc}"))
+    except (EOFError, OSError):
+        pass
     finally:
         connection.close()
 
@@ -220,39 +269,77 @@ class RapidOcrEngine:
 
     def __init__(self, timeout_seconds: float = 120.0):
         self.timeout = timeout_seconds
+        self._process = None
+        self._connection = None
         try:
             self.version = "rapidocr_onnxruntime " + package_version("rapidocr_onnxruntime")
         except PackageNotFoundError as exc:
             raise OcrUnavailable("rapidocr_onnxruntime is not installed "
                                  "(pip install -r backend/requirements-ocr.txt)") from exc
 
-    def recognize(self, png_bytes: bytes) -> list:
+    def _stop_worker(self):
+        connection, process = self._connection, self._process
+        self._connection = self._process = None
+        if connection is not None and process is not None and process.is_alive():
+            try:
+                connection.send(None)
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+        if process is not None:
+            process.join(2)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+        if connection is not None:
+            connection.close()
+
+    def _start_worker(self):
         context = multiprocessing.get_context("spawn")
-        parent, child = context.Pipe(duplex=False)
-        process = context.Process(target=_rapidocr_worker, args=(png_bytes, child), daemon=True)
+        parent, child = context.Pipe(duplex=True)
+        process = context.Process(target=_rapidocr_worker, args=(child,), daemon=True)
+        self._connection, self._process = parent, process
         process.start()
         child.close()
         try:
             if not parent.poll(self.timeout):
+                self._stop_worker()
                 raise OcrTimeout(f"RapidOCR exceeded {self.timeout:g}s")
             status, payload = parent.recv()
-        except EOFError as exc:
+        except (EOFError, OSError) as exc:
+            self._stop_worker()
             raise OcrError("RapidOCR worker exited without a result") from exc
-        finally:
-            if process.is_alive():
-                process.terminate()
-            process.join(5)
-            parent.close()
+        if status != "ready":
+            self._stop_worker()
+            raise OcrError(f"RapidOCR failed: {payload}")
+
+    def recognize(self, png_bytes: bytes) -> list:
+        if self._process is None or not self._process.is_alive():
+            self._stop_worker()
+            self._start_worker()
+        try:
+            self._connection.send(png_bytes)
+            if not self._connection.poll(self.timeout):
+                self._stop_worker()
+                raise OcrTimeout(f"RapidOCR exceeded {self.timeout:g}s")
+            status, payload = self._connection.recv()
+        except (EOFError, BrokenPipeError, OSError) as exc:
+            self._stop_worker()
+            raise OcrError("RapidOCR worker exited without a result") from exc
         if status != "ok":
             raise OcrError(f"RapidOCR failed: {payload}")
         return [f for f in payload if f["text"]]
+
+    def close(self):
+        """Stop the persistent worker and release its model memory."""
+        self._stop_worker()
 
 
 def build_engine(name: str, settings=None):
     if name == "tesseract":
         return TesseractEngine(getattr(settings, "tesseract_cmd", "tesseract"),
                                getattr(settings, "ocr_language", "eng"),
-                               getattr(settings, "ocr_timeout_seconds", 120.0))
+                               getattr(settings, "ocr_timeout_seconds", 120.0),
+                               getattr(settings, "tesseract_psm", 3))
     if name == "rapidocr":
         return RapidOcrEngine(getattr(settings, "ocr_timeout_seconds", 120.0))
     raise OcrUnavailable(f"unknown OCR engine {name!r}")

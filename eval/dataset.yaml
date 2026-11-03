@@ -1,0 +1,138 @@
+version: 1
+description: "Twenty labeled questions over the synthetic procurement KG."
+cases:
+  - question: "What is the total on invoice-PT-2026001?"
+    intent: lookup
+    gold_answer: "$1,250 USD"
+    gold_evidence_ids: [chunk-invoice-01]
+  - question: "What is the total on invoice-PT-2026002?"
+    intent: lookup
+    gold_answer: "$2,500 USD"
+    gold_evidence_ids: [chunk-invoice-02]
+  - question: "What is the total on invoice-PT-2026003?"
+    intent: lookup
+    gold_answer: "$3,750 USD"
+    gold_evidence_ids: [chunk-invoice-03]
+  - question: "What is the total on invoice-PT-2026004?"
+    intent: lookup
+    gold_answer: "$5,000 USD"
+    gold_evidence_ids: [chunk-invoice-04]
+  - question: "What is the total on invoice-PT-2026005?"
+    intent: lookup
+    gold_answer: "$6,250 USD"
+    gold_evidence_ids: [chunk-invoice-05]
+  - question: "What is the total on invoice-PT-2026006?"
+    intent: lookup
+    gold_answer: "$7,500 USD"
+    gold_evidence_ids: [chunk-invoice-06]
+  - question: "What is the total on invoice-PT-2026007?"
+    intent: lookup
+    gold_answer: "$8,750 USD"
+    gold_evidence_ids: [chunk-invoice-07]
+  - question: "What is the total on invoice-PT-2026008?"
+    intent: lookup
+    gold_answer: "$10,000 USD"
+    gold_evidence_ids: [chunk-invoice-08]
+  - question: "Which supplier issued invoice-PT-2026001?"
+    intent: relationship
+    gold_answer: "Northstar Supply 01 issued the invoice"
+    gold_evidence_ids: [edge-issued-invoice-01]
+  - question: "Which supplier issued invoice-PT-2026002?"
+    intent: relationship
+    gold_answer: "Northstar Supply 02 issued the invoice"
+    gold_evidence_ids: [edge-issued-invoice-02]
+  - question: "Which supplier issued invoice-PT-2026003?"
+    intent: relationship
+    gold_answer: "Northstar Supply 03 issued the invoice"
+    gold_evidence_ids: [edge-issued-invoice-03]
+  - question: "Which supplier issued invoice-PT-2026004?"
+    intent: relationship
+    gold_answer: "Northstar Supply 04 issued the invoice"
+    gold_evidence_ids: [edge-issued-invoice-04]
+  - question: "Which supplier issued invoice-PT-2026005?"
+    intent: relationship
+    gold_answer: "Northstar Supply 05 issued the invoice"
+    gold_evidence_ids: [edge-issued-invoice-05]
+  - question: "Which supplier issued invoice-PT-2026006?"
+    intent: relationship
+    gold_answer: "Northstar Supply 06 issued the invoice"
+    gold_evidence_ids: [edge-issued-invoice-06]
+  - question: "Which supplier issued invoice-PT-2026007?"
+    intent: relationship
+    gold_answer: "Northstar Supply 07 issued the invoice"
+    gold_evidence_ids: [edge-issued-invoice-07]
+  - question: "Which supplier issued invoice-PT-2026008?"
+    intent: relationship
+    gold_answer: "Northstar Supply 08 issued the invoice"
+    gold_evidence_ids: [edge-issued-invoice-08]
+  - question: "How many invoices are in the graph?"
+    intent: aggregation
+    gold_answer: "8 invoices"
+    gold_evidence_ids: [invoice-PT-2026001, invoice-PT-2026002, invoice-PT-2026003,
+                        invoice-PT-2026004, invoice-PT-2026005, invoice-PT-2026006,
+                        invoice-PT-2026007, invoice-PT-2026008]
+  - question: "How many suppliers are in the graph?"
+    intent: aggregation
+    gold_answer: "8 suppliers"
+    gold_evidence_ids: [supplier-01, supplier-02, supplier-03, supplier-04,
+                        supplier-05, supplier-06, supplier-07, supplier-08]
+  - question: "Sum the total amount across invoices"
+    intent: aggregation
+    gold_answer: "45,000 USD"
+    gold_evidence_ids: [invoice-PT-2026001, invoice-PT-2026002, invoice-PT-2026003,
+                        invoice-PT-2026004, invoice-PT-2026005, invoice-PT-2026006,
+                        invoice-PT-2026007, invoice-PT-2026008]
+  - question: "What is the total contract value?"
+    intent: aggregation
+    gold_answer: "450,000 USD"
+    gold_evidence_ids: [contract-2026-01, contract-2026-02, contract-2026-03,
+                        contract-2026-04, contract-2026-05, contract-2026-06,
+                        contract-2026-07, contract-2026-08]
+  - question: "Which supplier and customer are connected through invoice-PT-2026001?"
+    intent: multi_hop
+    gold_answer: "Northstar Supply 01 invoice-PT-2026001 Cedar Ridge Manufacturing 01"
+    gold_evidence_ids: [edge-issued-invoice-01, edge-billed-to-01]
+  - question: "Which supplier and customer are connected through invoice-PT-2026002?"
+    intent: multi_hop
+    gold_answer: "Northstar Supply 02 invoice-PT-2026002 Cedar Ridge Manufacturing 02"
+    gold_evidence_ids: [edge-issued-invoice-02, edge-billed-to-02]
+  - question: "Which supplier and customer are connected through invoice-PT-2026003?"
+    intent: multi_hop
+    gold_answer: "Northstar Supply 03 invoice-PT-2026003 Cedar Ridge Manufacturing 03"
+    gold_evidence_ids: [edge-issued-invoice-03, edge-billed-to-03]
+  - question: "Which supplier and customer are connected through invoice-PT-2026004?"
+    intent: multi_hop
+    gold_answer: "Northstar Supply 04 invoice-PT-2026004 Cedar Ridge Manufacturing 04"
+    gold_evidence_ids: [edge-issued-invoice-04, edge-billed-to-04]
+  - question: "Describe what item contract-2026-01 covers"
+    intent: descriptive
+    gold_answer: "industrial valve type 01"
+    gold_evidence_ids: [chunk-contract-01]
+  - question: "Describe what item contract-2026-02 covers"
+    intent: descriptive
+    gold_answer: "industrial valve type 02"
+    gold_evidence_ids: [chunk-contract-02]
+  - question: "Describe what item contract-2026-03 covers"
+    intent: descriptive
+    gold_answer: "industrial valve type 03"
+    gold_evidence_ids: [chunk-contract-03]
+  - question: "Describe what item contract-2026-04 covers"
+    intent: descriptive
+    gold_answer: "industrial valve type 04"
+    gold_evidence_ids: [chunk-contract-04]
+  - question: "What product does the first supplier's agreement cover?"
+    intent: descriptive
+    gold_answer: "industrial valve type 01"
+    gold_evidence_ids: [chunk-contract-01]
+  - question: "Which catalog material is included in the agreement worth USD 12500?"
+    intent: descriptive
+    gold_answer: "industrial valve type 01"
+    gold_evidence_ids: [chunk-contract-01]
+  - question: "Explain the purchase scope specified in MSA-2026-02"
+    intent: descriptive
+    gold_answer: "industrial valve type 02"
+    gold_evidence_ids: [chunk-contract-02]
+  - question: "What item does the contract ending in September 2026 supply?"
+    intent: descriptive
+    gold_answer: "industrial valve type 06"
+    gold_evidence_ids: [chunk-contract-06]

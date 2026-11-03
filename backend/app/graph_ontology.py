@@ -16,15 +16,36 @@ from .extraction.validation import INVOICE_LIKE_TYPES
 
 ONTOLOGY_VERSION = "papertrail-ontology-1"
 NODE_TYPES = frozenset({"Document", "Invoice", "Vendor", "Customer", "LineItem",
-                        "ProductCategory"})
+                        "ItemDescription", "ProductCategory", "SyntheticEmail",
+                        "ConversationSummary"})
 # Edge type -> (source node type, target node type). Direction is part of the type.
 EDGE_TYPES = {
     "SUPPORTS": ("Document", "Invoice"),
     "ISSUED": ("Vendor", "Invoice"),
     "BILLED_TO": ("Invoice", "Customer"),
     "CONTAINS": ("Invoice", "LineItem"),
+    # A shared exact-description hub connects matching line items across invoices.
+    "MATCHES_DESCRIPTION": ("LineItem", "ItemDescription"),
+    # Derived only in the Neo4j projection from shared, exact graph facts.
+    "SAME_VENDOR_AS": ("Invoice", "Invoice"),
+    "SAME_CUSTOMER_AS": ("Invoice", "Invoice"),
+    "SAME_ITEM_DESCRIPTION_AS": ("Invoice", "Invoice"),
+    # Derived ordering only; consecutive numbering does not imply a shared party.
+    "NEXT_INVOICE_NUMBER": ("Invoice", "Invoice"),
     # Defined for a later, evidence-backed classifier; the builder never emits it.
     "CLASSIFIED_AS": ("LineItem", "ProductCategory"),
+    # Synthetic conversation fixtures are explicitly marked and never treated as
+    # evidence from the source invoice.
+    "CONTAINS_SYNTHETIC_EMAIL": ("Document", "SyntheticEmail"),
+    "CONTAINS_CONVERSATION_SUMMARY": ("Document", "ConversationSummary"),
+    "EMAIL_REFERENCES_INVOICE": ("SyntheticEmail", "Invoice"),
+    "VENDOR_SENT_EMAIL": ("Vendor", "SyntheticEmail"),
+    "CUSTOMER_SENT_EMAIL": ("Customer", "SyntheticEmail"),
+    "EMAIL_ADDRESSED_TO_VENDOR": ("SyntheticEmail", "Vendor"),
+    "EMAIL_ADDRESSED_TO_CUSTOMER": ("SyntheticEmail", "Customer"),
+    "NEXT_EMAIL": ("SyntheticEmail", "SyntheticEmail"),
+    "SUMMARY_REFERENCES_INVOICE": ("ConversationSummary", "Invoice"),
+    "SUMMARY_INCLUDES_EMAIL": ("ConversationSummary", "SyntheticEmail"),
 }
 SHARED_NODE_TYPES = frozenset({"Vendor", "Customer"})  # may be supported by many documents
 PARTY_FIELDS = {"vendor": ("name", "address", "tax_id"),
@@ -100,6 +121,58 @@ def build_claims(document_id: str, content_hash: str, version, record: dict,
     doc = node("Document", document_id, {
         "document_id": document_id, "content_hash": content_hash, "filename": filename,
         "version": version, "doc_type": doc_type})
+    synthetic_type = record.get("synthetic_record_type")
+    if synthetic_type == "email":
+        email_id = record["email_id"]
+        email = node("SyntheticEmail", email_id, {
+            "synthetic": True, "synthetic_notice": "Fictional demo correspondence; not a business record.",
+            "email_id": email_id, "invoice_number": record.get("invoice_number"),
+            "subject": record.get("subject"), "sent_at": record.get("sent_at"),
+            "sender_name": record.get("sender_name"), "sender_email": record.get("sender_email"),
+            "recipient_name": record.get("recipient_name"),
+            "recipient_email": record.get("recipient_email"), "body": record.get("body"),
+            "summary_text": record.get("summary_text"),
+            "thread_position": record.get("thread_position"), "review_status": "synthetic_demo"})
+        edge("CONTAINS_SYNTHETIC_EMAIL", doc, email, {"synthetic": True})
+        invoice_id = record.get("invoice_node_id")
+        if invoice_id:
+            edge("EMAIL_REFERENCES_INVOICE", email, invoice_id, {"synthetic": True})
+        sender_role = record.get("sender_role")
+        recipient_role = record.get("recipient_role")
+        sender_id = record.get("sender_node_id")
+        recipient_id = record.get("recipient_node_id")
+        if sender_id and sender_role == "vendor":
+            edge("VENDOR_SENT_EMAIL", sender_id, email, {"synthetic": True})
+        elif sender_id and sender_role == "customer":
+            edge("CUSTOMER_SENT_EMAIL", sender_id, email, {"synthetic": True})
+        if recipient_id and recipient_role == "vendor":
+            edge("EMAIL_ADDRESSED_TO_VENDOR", email, recipient_id, {"synthetic": True})
+        elif recipient_id and recipient_role == "customer":
+            edge("EMAIL_ADDRESSED_TO_CUSTOMER", email, recipient_id, {"synthetic": True})
+        previous_id = record.get("previous_email_id")
+        if previous_id:
+            edge("NEXT_EMAIL", previous_id, email, {"synthetic": True})
+        return [claims[key] for key in sorted(claims)]
+
+    if synthetic_type == "summary":
+        summary_id = record["summary_id"]
+        summary = node("ConversationSummary", summary_id, {
+            "synthetic": True, "synthetic_notice": "Fictional demo summary; not a business record.",
+            "summary_id": summary_id, "title": record.get("title"),
+            "summary_text": record.get("summary_text"), "chunk_text": record.get("summary_text"),
+            "summary_scope": record.get("summary_scope"),
+            "invoice_number": record.get("invoice_number"),
+            "vendor_name": record.get("vendor_name"),
+            "customer_name": record.get("customer_name"),
+            "invoice_numbers": record.get("invoice_numbers", []),
+            "review_status": "synthetic_demo"})
+        edge("CONTAINS_CONVERSATION_SUMMARY", doc, summary, {"synthetic": True})
+        for invoice_id in record.get("invoice_node_ids", []):
+            edge("SUMMARY_REFERENCES_INVOICE", summary, invoice_id, {"synthetic": True})
+        for email_id in record.get("email_node_ids", []):
+            edge("SUMMARY_INCLUDES_EMAIL", summary, email_id, {"synthetic": True})
+        return [claims[key] for key in sorted(claims)]
+
     if doc_type is not None and doc_type not in INVOICE_LIKE_TYPES:
         # Retained for review, but no invoice facts are invented for other documents.
         return [claims[key] for key in sorted(claims)]
@@ -121,10 +194,11 @@ def build_claims(document_id: str, content_hash: str, version, record: dict,
         props["match_key"] = key
         pid = node(node_type, stable_key(key), props,
                    evidence=_evidence_for(record, (f"{role}.",)), match_key=key)
+        observed_party = {name: party.get(name) for name in ("name", "tax_id")}
         if role == "vendor":
-            edge(edge_type, pid, invoice)
+            edge(edge_type, pid, invoice, {"observed_party": observed_party})
         else:
-            edge(edge_type, invoice, pid)
+            edge(edge_type, invoice, pid, {"observed_party": observed_party})
     for index, item in enumerate(record.get("items") or []):
         lid = node("LineItem", f"{document_id}:{index}",
                    {"position": index, "row_index": index, **item},
