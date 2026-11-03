@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
 import { 
   FileText, Layers, Link2, ShieldCheck, Plus, AlertCircle, 
-  ArrowRight, ExternalLink, Sparkles, CheckCircle2, AlertTriangle, Clock
+  ArrowRight, ExternalLink, Sparkles, CheckCircle2, AlertTriangle, Clock, RefreshCw
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, 
@@ -20,25 +20,40 @@ export default function DashboardPage() {
   const [analytics, setAnalytics] = useState(null);
   const [reviewCount, setReviewCount] = useState(0);
   const [conversationThreads, setConversationThreads] = useState([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
-    async function loadData() {
-      const docs = await aiService.getDocuments();
-      const stats = await aiService.getAnalytics();
-      const revs = await aiService.getReviewItems();
-      const threads = await aiService.getConversationThreads();
-      setDocuments(docs || []);
-      setAnalytics(stats);
-      setReviewCount(revs ? revs.filter(r => r.status === "Pending").length : 0);
-      setConversationThreads(threads || []);
+    let mounted = true;
+    const onDataChanged = () => loadData(true);
+    async function loadData(refresh = false) {
+      if (refresh && mounted) setIsRefreshing(true);
+      try {
+        const [docs, stats, revs, threads] = await Promise.all([
+          aiService.getDocuments(), aiService.getAnalytics({ refresh }),
+          aiService.getReviewItems(), aiService.getConversationThreads()
+        ]);
+        if (!mounted) return;
+        setDocuments(docs || []);
+        setAnalytics(stats);
+        setReviewCount(revs ? revs.filter(r => r.status === "Pending").length : 0);
+        setConversationThreads(threads || []);
+      } finally {
+        if (mounted) setIsRefreshing(false);
+      }
     }
     loadData();
+    const refreshTimer = window.setInterval(() => loadData(true), 15000);
+    window.addEventListener('papertrail:data-changed', onDataChanged);
+    return () => { mounted = false; window.clearInterval(refreshTimer); window.removeEventListener('papertrail:data-changed', onDataChanged); };
   }, []);
 
   const totalDocs = analytics?.kpis?.documents_processed ?? documents.length;
   const totalEnts = analytics?.kpis?.entities_extracted ?? 0;
   const totalRels = analytics?.kpis?.relationships_discovered ?? 0;
   const totalFacts = analytics?.kpis?.facts_extracted ?? 0;
+  const documentStatusCounts = ['Completed', 'Needs Review', 'Processing', 'Awaiting Extraction', 'Failed']
+    .map(status => ({ name: status, count: documents.filter(doc => doc.status === status).length }))
+    .filter(row => row.count > 0);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
@@ -135,6 +150,12 @@ export default function DashboardPage() {
         </button>
       </div>
 
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '-18px' }}>
+        <button className="btn btn-outline btn-sm" disabled={isRefreshing} onClick={() => window.dispatchEvent(new Event('papertrail:data-changed'))}>
+          <RefreshCw size={14} className={isRefreshing ? 'spin' : ''} /> {isRefreshing ? 'Refreshing…' : 'Refresh dashboard'}
+        </button>
+      </div>
+
       {/* Charts & Attention Section */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '20px' }}>
         
@@ -142,34 +163,28 @@ export default function DashboardPage() {
         <div className="card" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
             <div>
-              <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Extraction Activity</h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Facts and entities volume</p>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Document Processing Status</h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Live counts from the document registry</p>
             </div>
-            <span className="badge badge-blue">Activity</span>
+            <span className="badge badge-blue">Live</span>
           </div>
+          <span style={{ fontSize: '.78rem', color: 'var(--text-muted)' }}>
+            Auto-complete cutoff: {Math.round(((documents.find(doc => doc.completion_threshold !== undefined)?.completion_threshold) ?? 0.8) * 100)}% + valid reconciliation
+          </span>
           <div style={{ width: '100%', height: '220px' }}>
-            {analytics?.extraction_activity_timeline?.length > 0 ? (
+            {documentStatusCounts.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={analytics.extraction_activity_timeline}>
-                  <defs>
-                    <linearGradient id="colorFacts" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.25}/>
-                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} tickLine={false} />
-                  <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false} />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#ffffff', borderRadius: '8px', border: '1px solid #e2e8f0' }}
-                  />
-                  <Area type="monotone" dataKey="facts" stroke="#2563eb" strokeWidth={2} fillOpacity={1} fill="url(#colorFacts)" name="Facts" />
-                </AreaChart>
+                <BarChart data={documentStatusCounts}>
+                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} tickLine={false} />
+                  <YAxis allowDecimals={false} stroke="#94a3b8" fontSize={12} tickLine={false} />
+                  <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderRadius: '8px', border: '1px solid #e2e8f0' }} />
+                  <Bar dataKey="count" fill="#2563eb" radius={[5, 5, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             ) : (
               <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                 <Clock size={32} color="#94a3b8" style={{ marginBottom: '8px' }} />
-                <span>No extraction activity yet.</span>
-                <span style={{ fontSize: '0.75rem', marginTop: '2px' }}>Upload a document to view analytics.</span>
+                <span>No registered documents yet.</span>
               </div>
             )}
           </div>
@@ -274,7 +289,7 @@ export default function DashboardPage() {
                 <th style={{ padding: '12px 16px' }}>Status</th>
                 <th style={{ padding: '12px 16px' }}>Entities</th>
                 <th style={{ padding: '12px 16px' }}>Facts</th>
-                <th style={{ padding: '12px 16px' }}>Confidence</th>
+                <th style={{ padding: '12px 16px' }}>Extraction Score</th>
                 <th style={{ padding: '12px 16px' }}>Uploaded</th>
                 <th style={{ padding: '12px 16px', textAlign: 'right' }}>Actions</th>
               </tr>
@@ -304,11 +319,12 @@ export default function DashboardPage() {
                       <span className={`badge ${doc.status === 'Completed' ? 'badge-green' : 'badge-amber'}`}>
                         {doc.status}
                       </span>
+                      {doc.status === 'Completed' && doc.review_status === 'needs_review' && <div style={{ marginTop: 4 }}><span className="badge badge-amber" title="Completion does not approve the extraction">Human review pending</span></div>}
                     </td>
                     <td style={{ padding: '14px 16px', fontWeight: 600 }}>{doc.entities_count || 0}</td>
                     <td style={{ padding: '14px 16px', fontWeight: 600 }}>{doc.facts_count || 0}</td>
                     <td style={{ padding: '14px 16px' }}>
-                      <ConfidenceBadge confidence={doc.confidence_score} />
+                      <ConfidenceBadge confidence={doc.confidence_score} basis={doc.confidence_basis} />
                     </td>
                     <td style={{ padding: '14px 16px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
                       {doc.uploaded_at || "Recent"}

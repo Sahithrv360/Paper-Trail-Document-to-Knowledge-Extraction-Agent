@@ -35,9 +35,9 @@ export default function AnalyticsPage() {
         {types.length ? <div style={{ height: 300 }}><ResponsiveContainer width="100%" height="100%"><BarChart data={types} layout="vertical" margin={{ left: 12, right: 14 }}><XAxis type="number" allowDecimals={false} /><YAxis type="category" dataKey="name" width={130} /><Tooltip /><Bar dataKey="count" radius={[0, 5, 5, 0]}>{types.map((row, index) => <Cell key={row.name} fill={colors[index % colors.length]} />)}</Bar></BarChart></ResponsiveContainer></div> : <p style={{ color: 'var(--text-muted)' }}>No graph nodes are available.</p>}
       </section>
       <section className="card" style={{ padding: 22 }}>
-        <h2 style={{ fontSize: '1.05rem', fontWeight: 750, margin: '0 0 4px' }}>Recorded confidence scores</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '.82rem', margin: '0 0 16px' }}>Only stored numerical scores appear here; unscored graph data is excluded.</p>
-        {confidence.length ? <div style={{ height: 300 }}><ResponsiveContainer width="100%" height="100%"><BarChart data={confidence}><XAxis dataKey="range" /><YAxis allowDecimals={false} /><Tooltip /><Bar dataKey="count" fill="#0f9f9a" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div> : <div style={{ padding: '50px 10px', textAlign: 'center', color: 'var(--text-muted)' }}>No confidence scores are stored for the current graph.</div>}
+        <h2 style={{ fontSize: '1.05rem', fontWeight: 750, margin: '0 0 4px' }}>Estimated extraction quality scores</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '.82rem', margin: '0 0 16px' }}>Rule-based scores combine core-field coverage, source-quote matches, and validation results. They are not calibrated probabilities.</p>
+        {confidence.length ? <div style={{ height: 300 }}><ResponsiveContainer width="100%" height="100%"><BarChart data={confidence}><XAxis dataKey="range" /><YAxis allowDecimals={false} /><Tooltip /><Bar dataKey="count" fill="#0f9f9a" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div> : <div style={{ padding: '50px 10px', textAlign: 'center', color: 'var(--text-muted)' }}>No extracted documents have scores yet.</div>}
       </section>
     </div>
     <section className="card" style={{ padding: 18, color: 'var(--text-secondary)', fontSize: '.88rem' }}>

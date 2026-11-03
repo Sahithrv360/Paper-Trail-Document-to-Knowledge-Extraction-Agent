@@ -167,7 +167,7 @@ export default function DocumentsPage() {
                 <th style={{ padding: '12px 16px' }}>Entities</th>
                 <th style={{ padding: '12px 16px' }}>Relationships</th>
                 <th style={{ padding: '12px 16px' }}>Facts</th>
-                <th style={{ padding: '12px 16px' }}>Confidence</th>
+                <th style={{ padding: '12px 16px' }}>Extraction Score</th>
                 <th style={{ padding: '12px 16px' }}>Uploaded Date</th>
                 <th style={{ padding: '12px 16px', textAlign: 'right' }}>Actions</th>
               </tr>
@@ -218,7 +218,7 @@ export default function DocumentsPage() {
                   <td style={{ padding: '14px 16px', fontWeight: 600 }}>{doc.relationships_count || 0}</td>
                   <td style={{ padding: '14px 16px', fontWeight: 600 }}>{doc.facts_count || 0}</td>
                   <td style={{ padding: '14px 16px' }}>
-                    <ConfidenceBadge confidence={doc.confidence_score} />
+                    <ConfidenceBadge confidence={doc.confidence_score} basis={doc.confidence_basis} />
                   </td>
                   <td style={{ padding: '14px 16px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
                     {doc.uploaded_at || "Recent"}

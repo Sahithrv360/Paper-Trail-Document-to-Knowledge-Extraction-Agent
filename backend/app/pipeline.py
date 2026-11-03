@@ -14,6 +14,7 @@ from pathlib import Path
 from .extraction.document_input import (DocumentLoadError, IMAGE_SUFFIXES, PDF_SUFFIXES,
                                         load_document)
 from .extraction.local_ocr import OcrUnavailable
+from .extraction.confidence import estimate_extraction_confidence
 from .extraction.providers import InvalidModelResponse, extract_validated
 from .graph import GraphStore, ReviewedExtractionConflict
 from .ingestion.registry import DocumentRegistry
@@ -178,6 +179,7 @@ class JobProcessor:
             raise RuntimeError("file changed while it was being processed")  # retryable
         record = result["record"]
         record["review_status"] = REVIEW_STATUS  # never auto-approve in this phase
+        record["confidence_score"] = estimate_extraction_confidence(record)
         self.graph.sync(document["document_id"], job["content_hash"], record,
                         filename=path.name,
                         evidence={"provenance": result["provenance"],

@@ -99,6 +99,7 @@ class Settings:
     vision_max_request_bytes: int = 8 * 1024 * 1024
     vision_max_image_pixels: int = 2_500_000
     vision_send_parser_text: bool = True
+    document_completion_threshold: float = 0.80
     price_input_per_mtok: Optional[float] = None    # only for a local cost estimate
     price_output_per_mtok: Optional[float] = None
 
@@ -132,6 +133,7 @@ class Settings:
             vision_max_request_bytes=int(_float(env, "VISION_API_MAX_REQUEST_MB", 8) * 1024 * 1024),
             vision_max_image_pixels=_int(env, "VISION_API_MAX_IMAGE_PIXELS", 2_500_000),
             vision_send_parser_text=env.get("VISION_API_SEND_PARSER_TEXT", "1") not in ("0", "false", "no"),
+            document_completion_threshold=_float(env, "DOCUMENT_COMPLETION_THRESHOLD", 0.80),
             price_input_per_mtok=_optional_float(env, "VISION_API_PRICE_INPUT_PER_MTOK"),
             price_output_per_mtok=_optional_float(env, "VISION_API_PRICE_OUTPUT_PER_MTOK"),
         )
@@ -147,6 +149,8 @@ class Settings:
             raise ValueError("TESSERACT_PSM must be one of 3, 4, 6, 11, or 12")
         if self.max_pages < 1 or self.max_page_pixels < 100_000:
             raise ValueError("MAX_PAGES must be >= 1 and MAX_PAGE_PIXELS >= 100000")
+        if not 0 <= self.document_completion_threshold <= 1:
+            raise ValueError("DOCUMENT_COMPLETION_THRESHOLD must be between 0 and 1")
 
     def remote_blockers(self) -> list:
         """Every unmet condition for sending a document to a hosted API (empty = allowed)."""

@@ -80,9 +80,11 @@ class AIService {
   documentFromApi(row) {
     const file = row.file || 'Document';
     const fileType = file.includes('.') ? file.split('.').pop().toUpperCase() : 'FILE';
+    const status = row.file_status === 'failed' ? 'Failed'
+      : row.completion_status === 'complete' ? 'Completed'
+      : row.file_status === 'complete' && row.extraction_state ? 'Needs Review'
+      : row.file_status === 'complete' ? 'Awaiting Extraction' : 'Processing';
     const isReview = row.review_status === 'needs_review' || row.validation_status === 'ambiguous_review';
-    const status = isReview ? 'Needs Review' : row.file_status === 'complete' ? 'Completed'
-      : row.file_status === 'failed' ? 'Failed' : 'Processing';
     return {
       id: row.document_id,
       filename: file,
@@ -95,7 +97,9 @@ class AIService {
       entities_count: 0,
       relationships_count: 0,
       facts_count: 0,
-      confidence_score: null,
+      confidence_score: row.confidence_score ?? null,
+      confidence_basis: row.confidence_basis || null,
+      completion_threshold: row.completion_threshold ?? 0.8,
       needs_review_count: isReview ? 1 : 0,
       summary: row.last_error || row.validation_status || row.extraction_state || 'Waiting for extraction',
       validation_status: row.validation_status,
@@ -432,7 +436,11 @@ class AIService {
         .map(([field, evidence]) => `${field}: ${evidence?.quote || ''}`).filter(Boolean).join('\n');
       document.invoice_meta = record;
       document.text_content = evidenceText;
-      document.confidence_score = record.confidence;
+      document.confidence_score = record.confidence_score ?? extraction.confidence_score ?? null;
+      document.confidence_basis = extraction.confidence_basis || null;
+      document.completion_threshold = extraction.completion_threshold ?? 0.8;
+      document.status = extraction.completion_status === 'complete' ? 'Completed'
+        : extraction.completion_status === 'needs_review' ? 'Needs Review' : document.status;
       document.pages = [{ page_number: 1, title: document.filename, text: evidenceText || 'OCR evidence is not available.' }];
       try {
         const image = await this.request(`/documents/${encodeURIComponent(docId)}/pages/1.png`);
@@ -568,8 +576,8 @@ class AIService {
     } catch (_) { return []; }
   }
 
-  async getKnowledgeGraph() {
-    if (this.graphCache && Date.now() - this.graphCacheAt < 30000) return this.graphCache;
+  async getKnowledgeGraph(forceRefresh = false) {
+    if (!forceRefresh && this.graphCache && Date.now() - this.graphCacheAt < 30000) return this.graphCache;
     try {
       const res = await this.request('/graph');
       const graph = await res.json();
@@ -659,7 +667,7 @@ class AIService {
   async getReviewItems() {
     try {
       const documents = await this.getDocuments();
-      this.reviewItems = documents.filter(doc => doc.status === 'Needs Review').map(doc => ({
+      this.reviewItems = documents.filter(doc => doc.review_status === 'needs_review' && doc.extraction_state).map(doc => ({
         id: doc.id, status: 'Pending', category: doc.validation_status === 'ambiguous_review'
           ? 'Ambiguous Relationship' : 'Low Confidence', title: doc.filename,
         description: doc.summary, source_doc_id: doc.id, source_doc_name: doc.filename
@@ -723,7 +731,8 @@ class AIService {
     return this.semanticModel;
   }
 
-  async getAnalytics() {
+  async getAnalytics({ refresh = false } = {}) {
+    if (refresh) this.graphCache = null;
     const [documents, entities, relationships, facts, reviews] = await Promise.all([
       this.getDocuments(), this.getEntities(), this.getRelationships(), this.getFacts(), this.getReviewItems()
     ]);
@@ -761,12 +770,15 @@ class AIService {
         count: typeCounts[name] || 0,
         color: typeColors[name] || "#64748b"
       })),
-      confidence_distribution: entities.some(e => e.confidence !== null && e.confidence !== undefined && Number.isFinite(Number(e.confidence))) ? [
-        { range: "95-100%", count: entities.filter(e => (e.confidence || 0) >= 0.95).length },
-        { range: "90-94%", count: entities.filter(e => (e.confidence || 0) >= 0.90 && (e.confidence || 0) < 0.95).length },
-        { range: "80-89%", count: entities.filter(e => (e.confidence || 0) >= 0.80 && (e.confidence || 0) < 0.90).length },
-        { range: "< 80%", count: entities.filter(e => (e.confidence || 0) < 0.80).length }
-      ] : [],
+      confidence_distribution: (() => {
+        const scores = documents.map(doc => doc.confidence_score).filter(score => score !== null && score !== undefined && Number.isFinite(Number(score))).map(Number);
+        return scores.length ? [
+          { range: "95-100%", count: scores.filter(score => score >= 0.95).length },
+          { range: "90-94%", count: scores.filter(score => score >= 0.90 && score < 0.95).length },
+          { range: "80-89%", count: scores.filter(score => score >= 0.80 && score < 0.90).length },
+          { range: "< 80%", count: scores.filter(score => score < 0.80).length }
+        ] : [];
+      })(),
       human_review_metrics: {
         pending_reviews: reviews.filter(r => r.status === "Pending").length,
         resolved_reviews: reviews.filter(r => r.status === "Resolved").length,

@@ -61,6 +61,7 @@ class ReviewService:
     def __init__(self, graph, registry=None, settings=None, neo4j_driver=None,
                  neo4j_database=None, answer_provider_factory=None):
         self.graph, self.registry, self.settings = graph, registry, settings
+        self.completion_threshold = getattr(settings, "document_completion_threshold", 0.80)
         self.neo4j_driver, self.neo4j_database = neo4j_driver, neo4j_database
         self.answer_provider_factory = answer_provider_factory
         self._page_cache = OrderedDict()
@@ -76,13 +77,25 @@ class ReviewService:
     # -- reads -----------------------------------------------------------------------
 
     def documents(self) -> list:
+        from ..extraction.confidence import estimate_extraction_confidence
+
         synced = {row["document_id"]: dict(row) for row in self.graph.synced_documents()}
         for document_id, row in synced.items():
             if row.get("state") == "active":  # show the reviewed (effective) status
                 current = self.graph.get_extraction(document_id)
                 if current is not None:
-                    row["validation_status"] = (current["effective_record"].get("validation_status")
+                    record = current.get("effective_record") or current.get("record") or {}
+                    row["validation_status"] = (record.get("validation_status")
                                                 or row.get("validation_status"))
+                    row["confidence_score"] = record.get("confidence_score")
+                    if row["confidence_score"] is None:
+                        row["confidence_score"] = estimate_extraction_confidence(record)
+                    row["confidence_score"] = max(0.0, min(1.0, float(row["confidence_score"])))
+                    row["confidence_basis"] = "rule_based_quality_proxy"
+                    row["completion_threshold"] = self.completion_threshold
+                    row["completion_status"] = (
+                        "complete" if row["confidence_score"] > self.completion_threshold
+                        and row["validation_status"] == "valid_reconciled" else "needs_review")
         rows = []
         registered = self.registry.documents() if self.registry else []
         seen = set()
@@ -95,6 +108,10 @@ class ReviewService:
                          "extraction_state": entry.get("state"),
                          "review_status": entry.get("review_status"),
                          "validation_status": entry.get("validation_status"),
+                         "confidence_score": entry.get("confidence_score"),
+                         "confidence_basis": entry.get("confidence_basis"),
+                         "completion_threshold": entry.get("completion_threshold", self.completion_threshold),
+                         "completion_status": entry.get("completion_status"),
                          "synced_version": entry.get("version"),
                          "last_synced_at": entry.get("last_synced_at")})
             seen.add(document["document_id"])
@@ -105,11 +122,17 @@ class ReviewService:
                              "extraction_state": entry.get("state"),
                              "review_status": entry.get("review_status"),
                              "validation_status": entry.get("validation_status"),
+                             "confidence_score": entry.get("confidence_score"),
+                             "confidence_basis": entry.get("confidence_basis"),
+                             "completion_threshold": entry.get("completion_threshold", self.completion_threshold),
+                             "completion_status": entry.get("completion_status"),
                              "synced_version": entry.get("version"),
                              "last_synced_at": entry.get("last_synced_at")})
         return sorted(rows, key=lambda r: (r["file"] or "", r["document_id"]))
 
     def document(self, document_id: str) -> dict:
+        from ..extraction.confidence import estimate_extraction_confidence
+
         extraction = self.graph.get_extraction(document_id)
         history = self.graph.extraction_history(document_id)
         if extraction is None and not history:
@@ -119,6 +142,20 @@ class ReviewService:
                                                 "model_revision", "created_at", "ended_at")}
                     | {"reviews": item["reviews"]} for item in history]
         file_state = None
+        if extraction is not None:
+            for key in ("effective_record", "record"):
+                record = extraction.get(key)
+                if isinstance(record, dict):
+                    if record.get("confidence_score") is None:
+                        record["confidence_score"] = estimate_extraction_confidence(record)
+                    record["confidence_score"] = max(0.0, min(1.0, float(record["confidence_score"])))
+                    extraction["confidence_score"] = record["confidence_score"]
+                    extraction["confidence_basis"] = "rule_based_quality_proxy"
+                    extraction["completion_threshold"] = self.completion_threshold
+                    extraction["completion_status"] = (
+                        "complete" if record["confidence_score"] > self.completion_threshold
+                        and record.get("validation_status") == "valid_reconciled" else "needs_review")
+                    break
         if self.registry is not None and extraction is not None:
             registered = self.registry.get_document(document_id)
             file_state = self._file_state(registered, extraction["content_hash"])
