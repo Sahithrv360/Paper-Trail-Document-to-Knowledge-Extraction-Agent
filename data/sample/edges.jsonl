@@ -1,0 +1,60 @@
+{"id": "edge-has-contract-01", "source": "supplier-01", "target": "contract-2026-01", "type": "HAS_CONTRACT", "properties": {}, "chunk_ids": ["chunk-contract-01"]}
+{"id": "edge-issued-invoice-01", "source": "supplier-01", "target": "invoice-PT-2026001", "type": "ISSUED_INVOICE", "properties": {}, "chunk_ids": ["chunk-invoice-01"]}
+{"id": "edge-billed-to-01", "source": "invoice-PT-2026001", "target": "customer-01", "type": "BILLED_TO", "properties": {}, "chunk_ids": ["chunk-invoice-01"]}
+{"id": "edge-contract-customer-01", "source": "contract-2026-01", "target": "customer-01", "type": "CONTRACT_WITH_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-01"]}
+{"id": "edge-contract-item-01", "source": "contract-2026-01", "target": "item-01", "type": "COVERS_ITEM", "properties": {}, "chunk_ids": ["chunk-contract-01"]}
+{"id": "edge-invoice-item-01", "source": "invoice-PT-2026001", "target": "item-01", "type": "CONTAINS_ITEM", "properties": {"quantity": 1}, "chunk_ids": ["chunk-invoice-01"]}
+{"id": "edge-serves-customer-01", "source": "supplier-01", "target": "customer-01", "type": "SERVES_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-01"]}
+{"id": "edge-has-contract-02", "source": "supplier-02", "target": "contract-2026-02", "type": "HAS_CONTRACT", "properties": {}, "chunk_ids": ["chunk-contract-02"]}
+{"id": "edge-issued-invoice-02", "source": "supplier-02", "target": "invoice-PT-2026002", "type": "ISSUED_INVOICE", "properties": {}, "chunk_ids": ["chunk-invoice-02"]}
+{"id": "edge-billed-to-02", "source": "invoice-PT-2026002", "target": "customer-02", "type": "BILLED_TO", "properties": {}, "chunk_ids": ["chunk-invoice-02"]}
+{"id": "edge-contract-customer-02", "source": "contract-2026-02", "target": "customer-02", "type": "CONTRACT_WITH_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-02"]}
+{"id": "edge-contract-item-02", "source": "contract-2026-02", "target": "item-02", "type": "COVERS_ITEM", "properties": {}, "chunk_ids": ["chunk-contract-02"]}
+{"id": "edge-invoice-item-02", "source": "invoice-PT-2026002", "target": "item-02", "type": "CONTAINS_ITEM", "properties": {"quantity": 2}, "chunk_ids": ["chunk-invoice-02"]}
+{"id": "edge-serves-customer-02", "source": "supplier-02", "target": "customer-02", "type": "SERVES_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-02"]}
+{"id": "edge-has-contract-03", "source": "supplier-03", "target": "contract-2026-03", "type": "HAS_CONTRACT", "properties": {}, "chunk_ids": ["chunk-contract-03"]}
+{"id": "edge-issued-invoice-03", "source": "supplier-03", "target": "invoice-PT-2026003", "type": "ISSUED_INVOICE", "properties": {}, "chunk_ids": ["chunk-invoice-03"]}
+{"id": "edge-billed-to-03", "source": "invoice-PT-2026003", "target": "customer-03", "type": "BILLED_TO", "properties": {}, "chunk_ids": ["chunk-invoice-03"]}
+{"id": "edge-contract-customer-03", "source": "contract-2026-03", "target": "customer-03", "type": "CONTRACT_WITH_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-03"]}
+{"id": "edge-contract-item-03", "source": "contract-2026-03", "target": "item-03", "type": "COVERS_ITEM", "properties": {}, "chunk_ids": ["chunk-contract-03"]}
+{"id": "edge-invoice-item-03", "source": "invoice-PT-2026003", "target": "item-03", "type": "CONTAINS_ITEM", "properties": {"quantity": 3}, "chunk_ids": ["chunk-invoice-03"]}
+{"id": "edge-serves-customer-03", "source": "supplier-03", "target": "customer-03", "type": "SERVES_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-03"]}
+{"id": "edge-has-contract-04", "source": "supplier-04", "target": "contract-2026-04", "type": "HAS_CONTRACT", "properties": {}, "chunk_ids": ["chunk-contract-04"]}
+{"id": "edge-issued-invoice-04", "source": "supplier-04", "target": "invoice-PT-2026004", "type": "ISSUED_INVOICE", "properties": {}, "chunk_ids": ["chunk-invoice-04"]}
+{"id": "edge-billed-to-04", "source": "invoice-PT-2026004", "target": "customer-04", "type": "BILLED_TO", "properties": {}, "chunk_ids": ["chunk-invoice-04"]}
+{"id": "edge-contract-customer-04", "source": "contract-2026-04", "target": "customer-04", "type": "CONTRACT_WITH_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-04"]}
+{"id": "edge-contract-item-04", "source": "contract-2026-04", "target": "item-04", "type": "COVERS_ITEM", "properties": {}, "chunk_ids": ["chunk-contract-04"]}
+{"id": "edge-invoice-item-04", "source": "invoice-PT-2026004", "target": "item-04", "type": "CONTAINS_ITEM", "properties": {"quantity": 4}, "chunk_ids": ["chunk-invoice-04"]}
+{"id": "edge-serves-customer-04", "source": "supplier-04", "target": "customer-04", "type": "SERVES_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-04"]}
+{"id": "edge-has-contract-05", "source": "supplier-05", "target": "contract-2026-05", "type": "HAS_CONTRACT", "properties": {}, "chunk_ids": ["chunk-contract-05"]}
+{"id": "edge-issued-invoice-05", "source": "supplier-05", "target": "invoice-PT-2026005", "type": "ISSUED_INVOICE", "properties": {}, "chunk_ids": ["chunk-invoice-05"]}
+{"id": "edge-billed-to-05", "source": "invoice-PT-2026005", "target": "customer-05", "type": "BILLED_TO", "properties": {}, "chunk_ids": ["chunk-invoice-05"]}
+{"id": "edge-contract-customer-05", "source": "contract-2026-05", "target": "customer-05", "type": "CONTRACT_WITH_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-05"]}
+{"id": "edge-contract-item-05", "source": "contract-2026-05", "target": "item-05", "type": "COVERS_ITEM", "properties": {}, "chunk_ids": ["chunk-contract-05"]}
+{"id": "edge-invoice-item-05", "source": "invoice-PT-2026005", "target": "item-05", "type": "CONTAINS_ITEM", "properties": {"quantity": 5}, "chunk_ids": ["chunk-invoice-05"]}
+{"id": "edge-serves-customer-05", "source": "supplier-05", "target": "customer-05", "type": "SERVES_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-05"]}
+{"id": "edge-has-contract-06", "source": "supplier-06", "target": "contract-2026-06", "type": "HAS_CONTRACT", "properties": {}, "chunk_ids": ["chunk-contract-06"]}
+{"id": "edge-issued-invoice-06", "source": "supplier-06", "target": "invoice-PT-2026006", "type": "ISSUED_INVOICE", "properties": {}, "chunk_ids": ["chunk-invoice-06"]}
+{"id": "edge-billed-to-06", "source": "invoice-PT-2026006", "target": "customer-06", "type": "BILLED_TO", "properties": {}, "chunk_ids": ["chunk-invoice-06"]}
+{"id": "edge-contract-customer-06", "source": "contract-2026-06", "target": "customer-06", "type": "CONTRACT_WITH_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-06"]}
+{"id": "edge-contract-item-06", "source": "contract-2026-06", "target": "item-06", "type": "COVERS_ITEM", "properties": {}, "chunk_ids": ["chunk-contract-06"]}
+{"id": "edge-invoice-item-06", "source": "invoice-PT-2026006", "target": "item-06", "type": "CONTAINS_ITEM", "properties": {"quantity": 6}, "chunk_ids": ["chunk-invoice-06"]}
+{"id": "edge-serves-customer-06", "source": "supplier-06", "target": "customer-06", "type": "SERVES_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-06"]}
+{"id": "edge-has-contract-07", "source": "supplier-07", "target": "contract-2026-07", "type": "HAS_CONTRACT", "properties": {}, "chunk_ids": ["chunk-contract-07"]}
+{"id": "edge-issued-invoice-07", "source": "supplier-07", "target": "invoice-PT-2026007", "type": "ISSUED_INVOICE", "properties": {}, "chunk_ids": ["chunk-invoice-07"]}
+{"id": "edge-billed-to-07", "source": "invoice-PT-2026007", "target": "customer-07", "type": "BILLED_TO", "properties": {}, "chunk_ids": ["chunk-invoice-07"]}
+{"id": "edge-contract-customer-07", "source": "contract-2026-07", "target": "customer-07", "type": "CONTRACT_WITH_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-07"]}
+{"id": "edge-contract-item-07", "source": "contract-2026-07", "target": "item-07", "type": "COVERS_ITEM", "properties": {}, "chunk_ids": ["chunk-contract-07"]}
+{"id": "edge-invoice-item-07", "source": "invoice-PT-2026007", "target": "item-07", "type": "CONTAINS_ITEM", "properties": {"quantity": 7}, "chunk_ids": ["chunk-invoice-07"]}
+{"id": "edge-serves-customer-07", "source": "supplier-07", "target": "customer-07", "type": "SERVES_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-07"]}
+{"id": "edge-has-contract-08", "source": "supplier-08", "target": "contract-2026-08", "type": "HAS_CONTRACT", "properties": {}, "chunk_ids": ["chunk-contract-08"]}
+{"id": "edge-issued-invoice-08", "source": "supplier-08", "target": "invoice-PT-2026008", "type": "ISSUED_INVOICE", "properties": {}, "chunk_ids": ["chunk-invoice-08"]}
+{"id": "edge-billed-to-08", "source": "invoice-PT-2026008", "target": "customer-08", "type": "BILLED_TO", "properties": {}, "chunk_ids": ["chunk-invoice-08"]}
+{"id": "edge-contract-customer-08", "source": "contract-2026-08", "target": "customer-08", "type": "CONTRACT_WITH_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-08"]}
+{"id": "edge-contract-item-08", "source": "contract-2026-08", "target": "item-08", "type": "COVERS_ITEM", "properties": {}, "chunk_ids": ["chunk-contract-08"]}
+{"id": "edge-invoice-item-08", "source": "invoice-PT-2026008", "target": "item-08", "type": "CONTAINS_ITEM", "properties": {"quantity": 8}, "chunk_ids": ["chunk-invoice-08"]}
+{"id": "edge-serves-customer-08", "source": "supplier-08", "target": "customer-08", "type": "SERVES_CUSTOMER", "properties": {}, "chunk_ids": ["chunk-contract-08"]}
+{"id": "edge-invoice-contract-01", "source": "invoice-PT-2026001", "target": "contract-2026-01", "type": "REFERENCES_CONTRACT", "properties": {}, "chunk_ids": ["chunk-invoice-01"]}
+{"id": "edge-invoice-contract-03", "source": "invoice-PT-2026003", "target": "contract-2026-03", "type": "REFERENCES_CONTRACT", "properties": {}, "chunk_ids": ["chunk-invoice-03"]}
+{"id": "edge-invoice-contract-05", "source": "invoice-PT-2026005", "target": "contract-2026-05", "type": "REFERENCES_CONTRACT", "properties": {}, "chunk_ids": ["chunk-invoice-05"]}
+{"id": "edge-invoice-contract-07", "source": "invoice-PT-2026007", "target": "contract-2026-07", "type": "REFERENCES_CONTRACT", "properties": {}, "chunk_ids": ["chunk-invoice-07"]}
