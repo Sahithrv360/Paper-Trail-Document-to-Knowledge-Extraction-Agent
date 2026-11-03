@@ -393,7 +393,7 @@ class AIService {
           omitted_nodes: Math.max(0, candidateNodeIds.length - evidenceNodes.length),
           omitted_edges: Math.max(0, candidateEdges.length - evidenceEdges.length)
         } },
-        table: tableRows,
+        table: Array.isArray(data.table) ? data.table : tableRows,
         answer_mode: data.answer_mode,
         model_name: data.model_name,
         citations: data.citations || [],

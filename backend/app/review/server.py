@@ -533,13 +533,17 @@ class ReviewService:
                             {"step": 4, "name": "Evidence Grounding", "description": "Returned the invoice facts and stated the missing conversation evidence.", "detail": f"{len(sources)} cited graph records."}],
                         "request_id": request_id}
             asks_product_frequency = (any(term in question_lower for term in
-                ("product", "products", "service", "services", "line item", "line-item"))
+                ("product", "products", "service", "services", "item", "items",
+                 "line item", "line-item"))
                 and any(term in question_lower for term in
-                ("most often", "most common", "appear", "frequent", "across")))
+                ("most often", "most common", "common", "appear", "frequent", "across",
+                 "shared", "between", "match", "related", "relationship", "count",
+                 "how many")))
             if asks_product_frequency:
                 nodes = {node["id"]: node for node in graph_export.get("nodes", [])}
                 invoices_for_item = {}
                 customers_for_invoice = {}
+                item_edges_for_invoice = {}
                 for edge in graph_export.get("edges", []):
                     if edge.get("type") == "CONTAINS":
                         invoice_id, item_id = edge.get("source"), edge.get("target")
@@ -547,6 +551,8 @@ class ReviewService:
                             invoice_id, item_id = item_id, invoice_id
                         if nodes.get(invoice_id, {}).get("type") == "Invoice":
                             invoices_for_item.setdefault(item_id, set()).add(invoice_id)
+                            item_edges_for_invoice.setdefault(item_id, set()).add(
+                                (invoice_id, edge.get("id")))
                     elif edge.get("type") == "BILLED_TO":
                         invoice_id, customer_id = edge.get("source"), edge.get("target")
                         if nodes.get(invoice_id, {}).get("type") == "Customer":
@@ -565,24 +571,33 @@ class ReviewService:
                     description = " ".join(str(props.get("description") or "").split())
                     if not description:
                         continue
+                    invoice_ids = set(invoice_ids)
+                    if requested_customer_ids:
+                        invoice_ids = {invoice_id for invoice_id in invoice_ids
+                            if customers_for_invoice.get(invoice_id, set()) & requested_customer_ids}
+                        if not invoice_ids:
+                            continue
                     linked_customers = {customer_id for invoice_id in invoice_ids
                                         for customer_id in customers_for_invoice.get(invoice_id, set())}
-                    if requested_customer_ids and not linked_customers.intersection(requested_customer_ids):
-                        continue
                     rows.append((description, item_id, invoice_ids, linked_customers))
                 counts = {}
                 for description, item_id, invoice_ids, customer_ids in rows:
-                    key = re.sub(r"\W+", " ", description.casefold()).strip()
+                    key = re.sub(r"\s+", " ", description).strip().casefold()
                     entry = counts.setdefault(key, {"description": description, "items": [],
                         "invoices": set(), "customers": set()})
                     entry["items"].append(item_id)
                     entry["invoices"].update(invoice_ids)
                     entry["customers"].update(customer_ids)
-                ranked = sorted(counts.values(), key=lambda item: (-len(item["items"]),
+                ranked = sorted(counts.values(), key=lambda item: (-len(item["invoices"]),
                                  item["description"].casefold()))
+                shared_items = [item for item in ranked if len(item["invoices"]) >= 2]
+                review_scope = "included" if include_unreviewed else "reviewed"
                 scope = (f"for {requested_customers[0]['props']['name']}" if requested_customers
-                         else "across reviewed invoices")
-                invoice_count = len({invoice_id for row in rows for invoice_id in row[2]})
+                         else f"across {review_scope} invoices")
+                invoice_ids_in_scope = {node_id for node_id, node in nodes.items()
+                    if node.get("type") == "Invoice" and (not requested_customer_ids
+                    or customers_for_invoice.get(node_id, set()) & requested_customer_ids)}
+                invoice_count = len(invoice_ids_in_scope)
                 def describe_product(item):
                     customer_names = [str((nodes.get(customer_id, {}).get("props") or {}).get("name"))
                                       for customer_id in sorted(item["customers"])
@@ -592,49 +607,149 @@ class ReviewService:
                                        if (nodes.get(invoice_id, {}).get("props") or {}).get("invoice_number")]
                     links = []
                     if customer_names:
-                        links.append("customer " + ", ".join(customer_names))
+                        shown_customers = ", ".join(customer_names[:5])
+                        if len(customer_names) > 5:
+                            shown_customers += f" and {len(customer_names) - 5} more"
+                        links.append("customers " + shown_customers)
                     if invoice_numbers:
-                        links.append("invoice " + ", ".join(invoice_numbers))
+                        shown_invoices = ", ".join(invoice_numbers[:8])
+                        if len(invoice_numbers) > 8:
+                            shown_invoices += f" and {len(invoice_numbers) - 8} more"
+                        links.append("invoices " + shown_invoices)
                     suffix = "; " + "; ".join(links) if links else ""
-                    return f"{item['description']} ({len(item['items'])} record{'' if len(item['items']) == 1 else 's'}{suffix})"
+                    invoice_pair_count = len(item["invoices"]) * (len(item["invoices"]) - 1) // 2
+                    return (f"{item['description']} ({len(item['invoices'])} invoices; "
+                            f"{invoice_pair_count} pair links{suffix})")
+                pair_items = {}
+                for item in shared_items:
+                    invoice_ids = sorted(item["invoices"])
+                    for index, left_id in enumerate(invoice_ids):
+                        for right_id in invoice_ids[index + 1:]:
+                            pair_items.setdefault((left_id, right_id), set()).add(item["description"])
+                pair_count = sum(len(item["invoices"]) * (len(item["invoices"]) - 1) // 2
+                                 for item in shared_items)
+                pair_examples = sorted(pair_items.items(), key=lambda row: row[0])
+                table_rows = []
+                for item in shared_items:
+                    item_invoice_count = len(item["invoices"])
+                    item_invoice_pair_count = item_invoice_count * (item_invoice_count - 1) // 2
+                    item_invoice_numbers = [str((nodes.get(invoice_id, {}).get("props") or {})
+                        .get("invoice_number") or invoice_id) for invoice_id in sorted(item["invoices"])]
+                    invoice_sample = ", ".join(item_invoice_numbers[:10])
+                    if len(item_invoice_numbers) > 10:
+                        invoice_sample += f" and {len(item_invoice_numbers) - 10} more"
+                    table_rows.extend([
+                        {"category": "Shared item", "entity": item["description"],
+                         "property": "Distinct invoices", "value": str(item_invoice_count),
+                         "confidence": None, "source": invoice_sample},
+                        {"category": "Invoice item match", "entity": item["description"],
+                         "property": "Invoice-pair links", "value": str(item_invoice_pair_count),
+                         "confidence": None, "source": "Exact normalized item-description match"},
+                    ])
+                table_rows.extend({"category": "Invoice item match",
+                    "entity": (f"{(nodes.get(left_id, {}).get('props') or {}).get('invoice_number') or left_id} ↔ "
+                               f"{(nodes.get(right_id, {}).get('props') or {}).get('invoice_number') or right_id}"),
+                    "property": "Shared item descriptions", "value": "; ".join(sorted(descriptions)),
+                    "confidence": None, "source": "Exact normalized item-description match"}
+                    for (left_id, right_id), descriptions in pair_examples[:500])
                 if not ranked:
-                    answer = f"I couldn't find reviewed invoice line-item descriptions {scope}. I excluded email summaries from this product search."
-                    selected_ids = []
+                    answer = (f"I couldn't find invoice line-item descriptions {scope}. "
+                        "I excluded email summaries from this item comparison.")
+                    selected_ids, links = [], []
+                elif not shared_items:
+                    answer = (f"I checked {len(rows)} described line items across {invoice_count} "
+                        f"{review_scope} invoices {scope}, but found no exact item descriptions shared "
+                        "by two or more invoices. So there are no item-match invoice links to count.")
+                    selected_ids, links = [], []
                 else:
-                    checked = (f"I checked {len(rows)} line-item records {scope}"
-                               if requested_customers else
-                               f"I checked {len(rows)} line-item records across {invoice_count} reviewed invoices")
-                    if len(ranked[0]["items"]) > 1:
-                        leaders = [item for item in ranked if len(item["items"]) == len(ranked[0]["items"])][:5]
-                        labels = "\n".join(f"- {describe_product(item)}" for item in leaders)
-                        answer = (f"{checked}. These are the most frequently listed products:\n{labels}\n"
-                                  "I counted invoice line items only, not email wording.")
-                    else:
-                        examples = "\n".join(f"- {describe_product(item)}" for item in ranked[:5])
-                        answer = (f"{checked}. I didn't find a product description that repeats, "
-                                  "so there isn't a single most common product in this set. "
-                                  f"Here are a few examples:\n{examples}\n"
-                                  "I counted invoice line items only, not email wording.")
-                    selected_ids = list(dict.fromkeys(
-                        [item_id for item in ranked[:5] for item_id in item["items"]] +
-                        [invoice_id for item in ranked[:5] for invoice_id in item["invoices"]] +
-                        [customer_id for item in ranked[:5] for customer_id in item["customers"]]))
-                sources = [{"id": item_id, "type": nodes[item_id].get("type"),
-                            "invoice_number": (nodes[item_id].get("props") or {}).get("invoice_number"),
-                            "filename": (nodes[item_id].get("props") or {}).get("filename"),
-                            "data": nodes[item_id].get("props") or {}}
-                           for item_id in selected_ids if item_id in nodes]
+                    checked = (f"I checked {len(rows)} described line items across {invoice_count} "
+                               f"{review_scope} invoices {scope}")
+                    examples = "\n".join(f"- {describe_product(item)}" for item in shared_items[:20])
+                    more_note = (f"\nThe table contains all {len(shared_items)} shared item descriptions."
+                                 if len(shared_items) > 20 else "")
+                    pair_lines = []
+                    for (left_id, right_id), descriptions in pair_examples[:20]:
+                        left = (nodes.get(left_id, {}).get("props") or {}).get("invoice_number") or left_id
+                        right = (nodes.get(right_id, {}).get("props") or {}).get("invoice_number") or right_id
+                        pair_lines.append(f"- Invoice {left} ↔ Invoice {right}: {', '.join(sorted(descriptions))}")
+                    pair_text = "\n".join(pair_lines)
+                    answer = (f"{checked}. I found {len(shared_items)} exact item descriptions shared "
+                        f"between invoices, creating {pair_count} item-match invoice links.\n"
+                        f"Shared items (counted by distinct invoices):\n{examples}{more_note}\n"
+                        f"Invoice-pair examples ({min(len(pair_examples), 20)} of {pair_count} links):\n"
+                        f"{pair_text}\n"
+                        "A pair is linked when its invoices contain the same item description after "
+                        "case and whitespace normalization; this does not prove the products are identical.")
+                    # Keep cited records and visible graph evidence bounded while making the
+                    # full item counts available in the answer table.
+                    selected_ids, links = [], []
+                    direct_item_relations = [edge for edge in graph_export.get("edges", [])
+                        if edge.get("type") == "SAME_ITEM_DESCRIPTION_AS"]
+                    supporting_item_edges = {edge.get("id"): edge
+                        for edge in graph_export.get("edges", [])
+                        if edge.get("type") == "MATCHES_DESCRIPTION"}
+                    for (left_id, right_id), descriptions in pair_examples:
+                        if len(selected_ids) >= 24:
+                            break
+                        for description in sorted(descriptions):
+                            normalized = re.sub(r"\s+", " ", description).strip().casefold()
+                            relation = next((edge for edge in direct_item_relations
+                                if re.sub(r"\s+", " ", str((edge.get("props") or {}).get(
+                                    "shared_description") or "")).strip().casefold() == normalized
+                                and {edge.get("source"), edge.get("target")} == {left_id, right_id}), None)
+                            if not relation:
+                                continue
+                            match_edges = [supporting_item_edges[fact_id] for fact_id in
+                                (relation.get("props") or {}).get("supporting_fact_ids", [])
+                                if fact_id in supporting_item_edges]
+                            item_ids = list(dict.fromkeys(edge.get("source") for edge in match_edges))
+                            contains_ids = [edge_id for item_id in item_ids
+                                for invoice_id, edge_id in item_edges_for_invoice.get(item_id, set())
+                                if invoice_id in {left_id, right_id}]
+                            hub_ids = [edge.get("target") for edge in match_edges if edge.get("target")]
+                            source_ids = list(dict.fromkeys([left_id, right_id, *item_ids, *hub_ids]))
+                            selected_ids.extend(source_ids)
+                            edge_ids = list(dict.fromkeys([relation["id"],
+                                *(edge.get("id") for edge in match_edges), *contains_ids]))
+                            links.append({"id": relation["id"], "type": relation["type"],
+                                "text": f"Invoice pair shares item description: {description}",
+                                "score": 1.0, "source_tool": "sqlite_item_match",
+                                "source_ids": source_ids, "edge_ids": edge_ids})
+                    selected_ids = list(dict.fromkeys(selected_ids))[:24]
+                    links = links[:24]
+                sources = []
+                for item_id in selected_ids:
+                    if item_id not in nodes:
+                        continue
+                    source_node = nodes[item_id]
+                    source_props = source_node.get("props") or {}
+                    source_type = source_node.get("type")
+                    source = {"id": item_id, "type": source_type,
+                        "invoice_number": source_props.get("invoice_number"),
+                        "filename": source_props.get("filename"), "data": source_props}
+                    if source_type == "LineItem":
+                        source["source"] = f"Item: {source_props.get('description') or 'description unavailable'}"
+                        invoice_id = next(iter(invoices_for_item.get(item_id, set())), None)
+                        invoice_number = (nodes.get(invoice_id, {}).get("props") or {}).get("invoice_number")
+                        if invoice_number:
+                            source["quote"] = f"Listed on invoice {invoice_number}."
+                    elif source_type == "ItemDescription":
+                        source["source"] = ("Shared item description: " +
+                            str(source_props.get("normalized_description") or item_id))
+                    sources.append(source)
                 self._update_agent_run(request_id, {"status": "completed", "stage": "completed",
                     "event": {"stage": "product_evidence", "event": {"step": "product_evidence",
                         "status": "completed", "line_item_count": len(rows)}}})
-                return {"answer": answer, "sources": sources, "links": [],
-                    "retrieval_count": len(sources), "reviewed_only": True,
+                return {"answer": answer, "sources": sources, "links": links,
+                    "table": table_rows, "retrieval_count": len(links) or len(sources),
+                    "reviewed_only": not include_unreviewed,
                     "answer_mode": "agent_invoice_line_item_evidence",
                     "retrieval_backend": "sqlite+kg_agent", "confidence": None,
                     "citations": [source["id"] for source in sources],
                     "pipeline_steps": [{"step": 1, "name": "Invoice line-item search",
-                        "description": "Counted reviewed invoice line-item descriptions and followed their invoice/customer links.",
-                        "detail": f"{len(rows)} line items; email text excluded."}],
+                        "description": "Counted invoice item descriptions and followed their pairwise item-match links.",
+                        "detail": (f"{len(rows)} described line items across {invoice_count} {review_scope} invoices; "
+                                   f"{len(shared_items)} shared descriptions and {pair_count if shared_items else 0} pairwise item matches; email text excluded.")}],
                     "request_id": request_id}
             try:
                 result = run_papertrail_agent(graph_export, question, generate=generate,
