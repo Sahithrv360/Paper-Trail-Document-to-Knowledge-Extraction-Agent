@@ -1,16 +1,25 @@
-# Paper Trail — Approach & Build
+# Paper Trail MVP — Current Approach
 
-This document describes the agreed MVP direction. Paper Trail turns invoices into reviewable, evidence-linked facts and a graph that users can inspect and query. The implementation record is in [`docs/SDD.md`](docs/SDD.md), with data rules in [`docs/DATA_CONTRACTS.md`](docs/DATA_CONTRACTS.md) and current milestones in [`docs/build-plan.md`](docs/build-plan.md).
+**Status reviewed:** 4 November 2026
 
-## MVP Scope
+Paper Trail is an MVP that turns invoice files and related business communications into reviewable records, a knowledge graph, and evidence-grounded answers. The current slice demonstrates a local invoice workflow; it is not a production-ready or enterprise-wide platform. This document describes the current repository build; the [software design](docs/SDD.md), [implementation guide](docs/IMPLEMENTATION_GUIDE.md), [milestone report](docs/MILESTONES_REPORT.md), and [build plan](docs/build-plan.md) provide additional detail.
 
-The MVP focuses on invoices. It accepts files through the existing watched-folder workflow, uses the current extraction providers, validates the result, records evidence and review history, and builds typed invoice relationships. OCR/model accuracy improvement is not the active phase; use the extracted details already available to complete and verify graph mapping.
+## What the current build does
 
-The current backend stores its source ledger and deterministic graph in SQLite. The local review server exposes document details, review actions, provenance, and review status. An optional Neo4j projection can be synced from SQLite and read by the graph view and chat; configure Neo4j locally before using those features. SQLite remains the source of truth.
+- Watches a configurable local folder and tracks file versions and extraction jobs.
+- Accepts bounded image and PDF input. Extraction options include Donut, local OCR with Tesseract or RapidOCR, and a hosted vision provider that requires explicit opt-in.
+- Normalizes invoice fields and line items, validates structure and arithmetic, attaches source evidence when the provider supplies it, and estimates a rule-based quality score. Extraction confidence is a triage score, not a calibrated probability; a high score does not itself approve a document.
+- Stores extraction history, evidence, review decisions, and the deterministic invoice graph in SQLite. Records remain reviewable; approval and correction are human actions.
+- Can project the SQLite graph into Neo4j. The graph includes documents, invoices, vendors, customers, and line items, with exact shared vendor, customer, and normalized item-description links. SQLite remains the source of truth.
+- Provides a local review server and the React Cognix-style frontend. The frontend includes dashboard/analytics, document review, knowledge graph search and visualization, evidence details, and an Ask Knowledge page. The graph uses Sigma.js. The review server is available on loopback at port 8765 by default; the Vite frontend runs on port 5173.
+- Answers graph questions in standard retrieval and Agent modes. Retrieval is bounded and read-only. The agent can report its query stages and citations; Ollama is the local generation option, and OpenRouter is an explicitly configured hosted alternative. A deterministic line-item aggregation path counts exact normalized descriptions across invoices without asking the LLM to calculate them.
+- Includes synthetic invoice and email examples for development. Synthetic communications are labeled and must not be represented as real payment or approval evidence.
 
-## Graph Mapping
+The current development `.env` selects RapidOCR for extraction and local Ollama with `qwen2.5:3b-instruct` for graph answers and Agent responses. A clean checkout uses `.env.example`, which leaves extraction queue-only until a provider is installed and enabled. The full model and installation list is in [`docs/build-plan.md`](docs/build-plan.md) and the [new-device guide](docs/SETUP_NEW_DEVICE.md).
 
-Use the existing ontology and stable IDs from `backend/app/graph_ontology.py`:
+## Data and graph rules
+
+SQLite is authoritative. Neo4j is a rebuildable projection; do not make model-generated graph writes or execute model-generated Cypher. Use the existing ontology and stable source IDs. The core supported paths are:
 
 ```text
 (Document)-[:SUPPORTS]->(Invoice)
@@ -19,26 +28,32 @@ Use the existing ontology and stable IDs from `backend/app/graph_ontology.py`:
 (Invoice)-[:CONTAINS]->(LineItem)
 ```
 
-Invoice identity uses the document ID, because invoice numbers can repeat. Vendor and customer nodes are shared only when the existing exact match key agrees; do not fuzzy-merge parties. Line items belong to one invoice and use document ID plus row position. Cross-invoice paths emerge through shared, supported vendors or customers. Do not invent item similarity or taxonomy links.
+Invoice identity is tied to the source document, while the invoice number is its display label. Shared parties use deterministic match keys. An item link means the normalized item description matches exactly; it does not establish that the underlying products are identical. Do not add fuzzy entity merges or product taxonomy claims without supporting data and evaluation.
 
-The Neo4j sync must be repeatable, preserve node and edge provenance/review status, and remove stale Paper Trail projection facts safely when a source version changes. Only allow the known ontology labels and relationship types. Never execute model-generated Cypher or accept model output as a graph write.
+By default, question answering uses reviewed evidence. Synthetic demo records are an explicit exception so the demo conversations remain queryable, and answers must label them as synthetic. Unreviewed records can be included through the UI option and must remain identified as unreviewed. If evidence is missing, conflicting, or only asks about an event, the answer must not report that event as completed.
 
-## Graph RAG and LLM
+## Model and privacy boundaries
 
-The Graph view and chat share the local review app. A bounded, read-only retriever searches Neo4j and expands relevant nodes to their connected parties, line items, and source documents. The LLM receives only that retrieved subgraph and returns a concise answer with invoice/document IDs and review status as citations. If the retrieved facts do not support an answer, it must say so.
+Question planning, evidence selection, and verification are performed by the local agent workflow. A configured model phrases the final response; it does not select arbitrary graph queries or write facts. The standard Graph RAG answerer supports local Ollama and an explicitly consented hosted provider. Agent mode supports local Ollama or an explicitly configured OpenRouter endpoint. Keep Ollama bound to loopback for local data. Hosted invoice extraction and hosted graph answering have separate opt-ins; never place credentials or private invoice records in source control.
 
-Use parameterized, allowlisted Cypher templates for retrieval; do not ask the LLM to write queries. Default answers should use approved or corrected facts. If unreviewed facts are included, label them clearly. The LLM may explain retrieved relationships, but must not create, merge, correct, or delete graph facts. Begin with lexical/structured graph retrieval; add embeddings only if evaluation shows that exact and lexical matching cannot find relevant item descriptions.
+## MVP boundary and next work
 
-Hosted generation is off by default. Add a separate explicit opt-in for sending retrieved invoice details to a hosted model, reuse configured model credentials where suitable, and never log prompts or answers containing invoice data. A local model can be considered later if hardware and latency measurements support it.
+The MVP's main remaining checks are a reproducible labeled evaluation of the current extraction paths and a clean end-to-end run with the target machine's invoice data and chosen local services. The agent query examples are manual checks, not a scored benchmark. Master-data connectors, robust cross-system entity resolution, verified product identity resolution, production authentication/deployment, and contract processing beyond the invoice workflow are outside this MVP.
 
-## Delivery Order and Exit Checks
+## Useful local commands
 
-1. **Neo4j projection:** implemented as a repeatable CLI and review-app action, with stable IDs, typed edges, support status, and stale-fact cleanup. Still needs a run against the configured local Neo4j instance.
-2. **Graph and chat UI:** implemented in the existing local review app. The graph is read from Neo4j; answers use bounded retrieval, link to source invoice/document nodes, and abstain when facts are missing. Hosted LLM generation is optional and separately gated.
-3. **End-to-end check:** pending. Sync and inspect existing extractions, review/approve records, and confirm chat answers reflect the reviewed graph and source documents. Record the tested commands and remaining limits for teammates.
+From the repository root:
 
-Tests should cover mapping, edge direction, repeat sync, stale-fact cleanup, review filtering, retrieval boundaries, citations, and abstention. Do not claim extraction accuracy improvements in this phase. Keep `.env`, credentials, customer invoices, database files, and local evaluation artifacts out of Git.
+```powershell
+python -m backend.app.review.server
+```
 
-## Existing Capabilities and Deferred Work
+In another terminal, run the frontend:
 
-The repository already contains folder ingestion, Donut/Tesseract/RapidOCR and an opt-in vision API path, canonical invoice schema, arithmetic/evidence validation, SQLite ledger and graph, local reviewer UI, and a benchmark harness. Dataset-based OCR/model comparison has not been established; this phase does not change that. Defer contracts, production deployment, enterprise connectors, product taxonomy, automatic fuzzy entity resolution, and graph writes from LLM output until the invoice MVP is demonstrated.
+```powershell
+cd frontend
+npm ci
+npm run dev
+```
+
+Open `http://localhost:5173` and use the review token printed by the backend. Neo4j and Ollama are optional for the local SQLite-backed experience; configure their settings in the ignored `.env` file to use those services. See [frontend setup](frontend/README.md) and [environment settings](.env.example).

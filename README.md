@@ -1,281 +1,129 @@
 # Paper Trail — Document-to-Knowledge Extraction Agent
 
-Paper Trail is a capstone project focused on extracting structured, evidence-backed knowledge from enterprise documents such as invoices and contracts.
+Paper Trail is a local-first invoice-processing MVP. It ingests invoice files, extracts structured fields with evidence where available, keeps results reviewable, builds a graph, and answers business questions from linked records.
 
-Instead of treating OCR or PDF text extraction as the final result, the system aims to identify entities, relationships, and business facts, connect them to existing master records only when supported by evidence, and flag ambiguous cases for human review.
+> **MVP status (4 November 2026):** The repository includes watched-folder ingestion, bounded image/PDF handling, Donut and OCR extraction options, an opt-in hosted vision extractor, a versioned SQLite ledger and graph, local review tools, an optional Neo4j projection, a React dashboard/knowledge-graph/Ask Knowledge UI, and standard and agentic graph QA. The MVP workflow is implemented, while representative labeled evaluation and a clean end-to-end validation on the target machine remain outstanding. This is not a production-ready system. See the [current approach](APPROACH.md), [build plan](docs/build-plan.md), and [milestone report](docs/MILESTONES_REPORT.md).
 
-> **Project status:** The local pipeline supports bounded image/PDF input, Tesseract or RapidOCR extraction, Donut, and an explicitly opt-in vision API; it validates evidence, stores versioned records in a SQLite ledger, syncs a deterministic graph, and provides a local review page and benchmark harness. Run `python -m unittest discover -s backend/tests -v` for current checks; OCR accuracy on a labelled project-specific set is still unverified. See [`docs/MILESTONES_REPORT.md`](./docs/MILESTONES_REPORT.md) for scope and limits.
+The current development `.env` is configured for RapidOCR extraction and local Ollama answer generation with `qwen2.5:3b-instruct`. The checked-in `.env.example` is safer for a fresh setup and defaults extraction to queue-only; set the provider and install its optional dependencies to enable extraction.
 
-For GPU-laptop setup, current implementation status, and remaining work, see [`GPU_TRANSFER_GUIDE.md`](./GPU_TRANSFER_GUIDE.md).
+## What it does
 
-## Problem Statement
+- Watches a configurable folder and tracks document versions and processing jobs.
+- Extracts invoice fields and line items using a selected local or explicitly enabled hosted provider.
+- Validates output and stores source evidence, provenance, confidence triage, and review history.
+- Builds a deterministic SQLite graph and can sync a rebuildable projection to Neo4j.
+- Links invoices through shared vendors, customers, and exact normalized item descriptions. An item text match does not prove product identity.
+- Shows documents, review details, live analytics, graph search, evidence, and graph-grounded answers in the local UI.
+- Provides deterministic common-item counts across invoices, plus standard graph retrieval and an Agent mode that reports query progress and citations.
 
-Enterprise documents contain important business information in unstructured formats. Extracting text alone does not determine whether a claim is supported, which master record an entity represents, or whether a contract clause describes a completed event or a conditional possibility.
+SQLite is the source of truth. Neo4j is optional. The agent is read-only; its model phrases answers and does not write graph facts. Synthetic/demo emails are labeled and are not real payment or approval evidence. Confidence scores are rules-based triage values, not calibrated probabilities or automatic approvals.
 
-Paper Trail aims to address these challenges through evidence provenance, structured validation, conservative entity resolution, and explicit uncertainty handling.
+## Quick start (Windows)
 
-## Objectives
+For the complete new-machine guide, including all model downloads, optional OCR/Neo4j setup, privacy settings, and data transfer, see [`docs/SETUP_NEW_DEVICE.md`](docs/SETUP_NEW_DEVICE.md).
 
-- Process digital and scanned PDF documents.
-- Extract entities, relationships, and business facts.
-- Attach source evidence and page references where available.
-- Compare extracted entities with existing master records.
-- Leave ambiguous links unresolved and route them for review.
-- Preserve conditional and uncertain language.
-- Evaluate accuracy, reliability, latency, and cost.
+Prerequisites: Git, Python 3.11+ (Python 3.12 recommended), Node.js LTS, and Ollama if you want local LLM answers.
 
-## Proposed Architecture
+### 1. Clone and install the Python agent package
 
-The planned processing pipeline is:
-
-1. Document upload and validation.
-2. PDF text extraction and OCR fallback.
-3. Text preprocessing and source-location preservation.
-4. Entity, relationship, and fact extraction.
-5. Structured-output validation.
-6. Evidence-support validation.
-7. Master-record candidate generation and entity resolution.
-8. Human review for uncertain cases.
-9. Structured result storage and presentation.
-10. Evaluation and observability.
-
-See the editable [current system architecture](./docs/system_architecture.drawio) for the implemented intake, extraction, review, graph, and question-answering flows. The [Graph RAG message flow](./docs/graph_rag_message_flow.drawio) gives a closer view of question planning and retrieval. `architechture.png` is the original high-level image.
-
-## Planned Technology Stack
-
-The technology stack remains subject to capstone constraints and testing.
-
-| Component | Proposed option |
-|---|---|
-| Application language | Python |
-| API | FastAPI |
-| PDF processing | A PDF text-extraction library |
-| OCR | An OCR engine suitable for the selected environment |
-| Structured validation | Pydantic or JSON Schema |
-| Initial metadata storage | SQLite |
-| Knowledge extraction | Replaceable LLM interface |
-| Evaluation | Versioned labelled examples and a repeatable evaluation runner |
-| User interface | A lightweight document-review interface |
-
-These are proposed choices, not a statement that the components are already implemented.
-
-## Repository Structure
-
-The planned structure is:
-
-```text
-Paper-Trail-Document-to-Knowledge-Extraction-Agent/
-├── README.md
-├── APPROACH.md
-├── ARTEFACT.md
-├── architechture.png                 # original architecture image
-├── docs/
-│   ├── system_architecture.drawio    # current editable architecture
-│   └── graph_rag_message_flow.drawio # question-to-answer flow
-├── docs/
-│   └── functional.md
-├── src/
-│   └── paper_trail/
-├── prompts/
-├── data/
-│   ├── synthetic/
-│   └── evaluation/
-├── tests/
-├── evals/
-├── scripts/
-├── .env.example
-├── .gitignore
-└── requirements.txt
-```
-
-This is the intended structure; directories and files should be added as they become necessary. Keep held-out evaluation data separate from development data.
-
-## Getting Started
-
-### Prerequisites
-
-- Python version compatible with the selected dependencies.
-- Git.
-- An OCR engine if required by the chosen OCR integration.
-- Model-provider credentials only if an approved hosted model is selected.
-
-### Setup
-
-Clone the repository:
-
-```bash
+```powershell
 git clone https://github.com/Sahithrv360/Paper-Trail-Document-to-Knowledge-Extraction-Agent.git
 cd Paper-Trail-Document-to-Knowledge-Extraction-Agent
-```
-
-Create and activate a virtual environment.
-
-**Windows PowerShell:**
-
-```powershell
-python -m venv .venv
+py -3.12 -m venv .venv
+Set-ExecutionPolicy -Scope Process Bypass
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+Copy-Item .env.example .env
 ```
 
-**Linux/macOS:**
+Set `WATCH_FOLDER` in `.env` to the local folder where invoices should be watched. Keep the file private.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
+### 2. Pull the default local chat and embedding models
 
-The first implementation slice is a Python folder ingester using only the standard library. No dependency installation is required. From the repository root, run its tests with:
-
-```bash
-python -m unittest discover -s backend/tests -v
-```
-
-Run the watcher with:
+Install and start Ollama, then run:
 
 ```powershell
-python -m backend.app.main
+ollama pull qwen2.5:3b-instruct
+ollama pull nomic-embed-text
 ```
 
-It watches `./watched` and stores its document registry in `./paper_trail.sqlite3` by default. Set `WATCH_FOLDER` and `DATABASE_PATH` to change those paths; `POLL_INTERVAL_SECONDS` defaults to `2`, and `MAX_FILE_MB` defaults to `25`. By default it only queues files. In PowerShell, set `$env:EXTRACTION_PROVIDER = 'donut'` to enable local Donut extraction and graph sync. JPG/PNG are processed; PDFs are queued and then fail because OCR/PDF extraction is not implemented. All records remain `needs_review`.
+`qwen2.5:3b-instruct` is the model named in `.env.example` for local answer generation. `nomic-embed-text` is used for dense retrieval embeddings. These are separate models and both must be available to Ollama for those paths. You can select another installed chat model using `GRAPH_RAG_MODEL`.
 
-To explicitly rerun a registered image with the current model/schema, use `python -m backend.app.reprocess --path watched/invoice-242.jpg`. The command prints the stored extraction and protects records marked `approved` or `corrected`.
+The `.env.example` also contains `qwen/qwen3.8-flash` as an optional OpenRouter model ID. OpenRouter needs an API key, and retrieved invoice evidence leaves the device when that provider is used. The local default is Ollama.
 
-### Invoice Extraction Baseline
+### 3. Start backend and UI
 
-The dataset and field mapping are documented in [`data/README.md`](./data/README.md). Install the optional model libraries only when running extraction; this downloads an approximately 809 MB model checkpoint into the Hugging Face cache. The evaluator reads the downloaded images and annotations from `data/raw/invoices-donut-data-v1/`:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r backend/requirements-extraction.txt
-python -m backend.app.extraction.inspect_dataset --split train --samples 3
-python -m backend.app.extraction.evaluate --split test --limit 5 --device cpu
-```
-
-The evaluator selects deterministic, evenly spaced local rows and writes aggregate metrics plus per-file field comparisons to `reports/donut-baseline.json` and `reports/donut-baseline.md`. Run `--limit 26` to evaluate all test images. Use validation data when experimenting with improvements and keep test data for final evaluation. Do not copy dataset invoices into `watched/`. The model does not provide field evidence or confidence, and dataset party labels combine names with addresses; unavailable fields remain null and results require review.
-
-### PaddleOCR Text and Table Preview
-
-PaddleOCR is an optional OCR path for inspecting a local invoice image. It writes recognized lines, recognizer scores, geometry, table output, and layout blocks to JSON. It does not map text to invoice fields, update the graph, or produce an accuracy score. Install it separately from Donut:
+Terminal 1, from the repository root:
 
 ```powershell
-python -m pip install -r backend/requirements-paddleocr.txt
-python -m backend.app.extraction.paddle_ocr --image backend/tests/fixtures/invoice-242.jpg --device cpu
-```
-
-The first run downloads PaddleOCR models. The default report is `reports/paddleocr/invoice-242.json` (reports are git-ignored). CPU mode disables MKL-DNN to avoid a known class of Windows oneDNN inference failures. OCR recognition scores are not invoice-field confidence. PP-StructureV3 is not used by the pipeline; the lighter Tesseract/RapidOCR paths should be used for mapped extraction.
-
-### Local OCR, PDF, review, and benchmark
-
-For the bounded OCR pipeline, install Tesseract separately, then install optional Python requirements. The PDF extra enables digital text extraction and scanned-page rendering:
-
-```powershell
-python -m pip install -r backend/requirements-ocr.txt -r backend/requirements-pdf.txt
-python -m backend.app.extract_one backend/tests/fixtures/invoice-242.jpg --provider ocr
 python -m backend.app.review.server
 ```
 
-The review server binds to `127.0.0.1` and serves the React app from `frontend/dist` at its printed link. It rebuilds the frontend automatically when source files are newer; the older built-in reviewer is used only if npm or the frontend build is unavailable. Keep the one-time link private. Copy `.env.example` to `.env` to configure limits and providers. Queue-only remains the default. For labeled evaluation, use `backend.app.extraction.benchmark` and the validation split first; reserve the test split for a frozen, one-time final run. See [`docs/EVALUATION.md`](./docs/EVALUATION.md) and [`docs/DATA_HANDLING.md`](./docs/DATA_HANDLING.md). No accuracy improvement is established until that evaluation runs.
+Terminal 2, from the repository root:
 
-### Neo4j graph view and Graph RAG
+```powershell
+cd frontend
+npm ci
+npm run dev
+```
 
-SQLite remains the source of truth. Neo4j receives a rebuildable graph projection. The sync also creates direct `SAME_VENDOR_AS`, `SAME_CUSTOMER_AS`, and `SAME_ITEM_DESCRIPTION_AS` invoice links when two invoices share a party node or an exact normalized item description. These links identify the shared basis; an item-description match does not claim the products are identical. No SQLite migration is needed: rerun sync after importing or reviewing invoices.
+The backend prints a token link on port `8765`. Copy its `#token=...` fragment into `http://localhost:5173/#token=...` to open the new React UI. Vite forwards API calls to the backend. Keep the token private.
 
-For the local Docker database, check that the container is running and its ports are published (`7474` for Browser and `7687` for Bolt). If `.env` does not exist, copy `.env.example` to `.env`; then set `NEO4J_URI=bolt://127.0.0.1:7687`, `NEO4J_USERNAME=neo4j`, and `NEO4J_PASSWORD` to the password you set for the local container. Keep `.env` private. Install the optional driver and import the SQLite graph:
+## Model and engine inventory
+
+| Task | Default/available choice | Install or enable |
+|---|---|---|
+| Invoice extraction | Pinned Donut checkpoint `katanaml-org/invoices-donut-model-v1` | `python -m pip install -r backend/requirements-extraction.txt`; set `EXTRACTION_PROVIDER=donut`. First inference downloads model weights. |
+| Invoice OCR and field mapping | Tesseract executable | Install the Tesseract program separately; install `backend/requirements-ocr.txt` and `backend/requirements-pdf.txt`; set `EXTRACTION_PROVIDER=ocr`, `PARSER_ENGINE=tesseract`. |
+| Optional OCR | RapidOCR ONNX Runtime | `python -m pip install -r backend/requirements-rapidocr.txt`; set `PARSER_ENGINE=rapidocr`. It uses more memory than Tesseract in the recorded fixture run. |
+| OCR/layout inspection | PaddleOCR PP-StructureV3 (`en_PP-OCRv4_mobile_rec`) | `python -m pip install -r backend/requirements-paddleocr.txt`; standalone preview only, not the watched-folder invoice mapper. |
+| Local graph answer / Agent wording | Ollama model `qwen2.5:3b-instruct` in `.env.example` | Install Ollama, then `ollama pull qwen2.5:3b-instruct`; configure `GRAPH_RAG_BACKEND=ollama`. |
+| Dense retrieval | Ollama `nomic-embed-text`; optional local fallback `BAAI/bge-small-en-v1.5` | `ollama pull nomic-embed-text`; the Sentence Transformers fallback is optional and documented in `pyproject.toml`. |
+| Hosted Agent wording | OpenRouter model ID `qwen/qwen3.8-flash` in `.env.example` | Set `AGENT_LLM_PROVIDER=openrouter`, `OPENROUTER_MODEL`, and `OPENROUTER_API_KEY`. Verify model availability before use. |
+| Graph database | SQLite; optional Neo4j | Neo4j needs Docker/Neo4j and `python -m pip install -r backend/requirements-neo4j.txt`. |
+
+The actual provider and model are determined by `.env` and the machine's installed software. No model weights or API credentials are committed. Hosted invoice extraction and hosted graph answering require separate explicit opt-ins.
+
+## Optional setup
+
+### Local invoice extraction
+
+The app defaults to `EXTRACTION_PROVIDER=none`, which queues files without running a model. To use Donut or OCR, install the corresponding requirements in the active virtual environment and set the provider in `.env`. PDF text extraction/rendering uses `backend/requirements-pdf.txt`. Extraction remains subject to human review; a completion score is not approval.
+
+### Neo4j
+
+Neo4j is optional. Start a local Neo4j instance with Bolt port `7687` available, set `NEO4J_URI`, `NEO4J_USERNAME`, and `NEO4J_PASSWORD` in `.env`, then:
 
 ```powershell
 python -m pip install -r backend/requirements-neo4j.txt
 python -m backend.app.neo4j_sync
 ```
 
-The sync is repeatable and imports only the application's known node and relationship types. Add `--reviewed-only` to project only approved/corrected facts. Open Neo4j Browser at `http://localhost:7474` and try `MATCH (n:PaperTrail) RETURN n LIMIT 100`.
+SQLite remains authoritative, so the UI can use the SQLite graph if Neo4j is unavailable. Re-sync after importing or reviewing records.
 
-To inspect invoice-to-invoice links in Neo4j Browser, run `MATCH (a:PaperTrail:Invoice)-[r]->(b:PaperTrail:Invoice) RETURN a,r,b`. To rebuild after new extractions, reviews, or corrections, run `python -m backend.app.neo4j_sync` again. In the Paper Trail Graph view, use **Sync Neo4j** after starting the review server; search for an invoice, party, or item, then select a node to inspect its connected neighborhood and supporting facts.
-
-Start the combined graph and chat review UI with:
+## Development checks
 
 ```powershell
-python -m backend.app.review.server
+python -m unittest discover -s backend/tests -v
 ```
 
-The Graph view and chat use the SQLite graph, so they remain available when Neo4j is stopped. Neo4j is an optional projection for exploration. Retrieval is bounded, read-only, and reviewed-only by default. First inspect retrieved context without making an API call:
+This suite is not a substitute for labeled extraction or business-QA evaluation. Follow [`docs/EVALUATION.md`](docs/EVALUATION.md) and record actual run configuration and results before making accuracy claims.
 
-```powershell
-python -m backend.app.graph_rag "Which invoices were issued by Acme Books?"
-```
+## Repository guide
 
-For a repeatable local demo, reset and seed the isolated fictional presenter graph, then score its 15 deterministic connection questions:
+- [`APPROACH.md`](APPROACH.md) — current implementation and design rules.
+- [`docs/build-plan.md`](docs/build-plan.md) — current status, model inventory, and next validation sequence.
+- [`docs/SETUP_NEW_DEVICE.md`](docs/SETUP_NEW_DEVICE.md) — install and run locally on a new device.
+- [`docs/SDD.md`](docs/SDD.md) — detailed system design and implementation notes.
+- [`docs/DATA_CONTRACTS.md`](docs/DATA_CONTRACTS.md) — extraction, evidence, ledger, and graph contracts.
+- [`docs/DATA_HANDLING.md`](docs/DATA_HANDLING.md) — local and hosted processing boundaries.
+- [`docs/EVALUATION.md`](docs/EVALUATION.md) — benchmark workflow and metric definitions.
+- [`docs/MILESTONES_REPORT.md`](docs/MILESTONES_REPORT.md) — delivered milestones and known gaps.
+- [`docs/system_architecture.drawio`](docs/system_architecture.drawio) and [`docs/graph_rag_message_flow.drawio`](docs/graph_rag_message_flow.drawio) — editable architecture diagrams.
+- [`docs/agent_query_examples.md`](docs/agent_query_examples.md) — sample queries and manual checking guide.
+- [`docs/prototype.html`](docs/prototype.html) — static UX sketch; the live UI is in `frontend/`.
 
-```powershell
-python -m backend.app.demo
-python -m backend.app.evaluate_graph_rag
-```
+## Privacy
 
-The scorer defaults to `presentation_data/runtime/paper_trail_graph.sqlite3`; it does not touch the live graph. Its 15/15 result checks deterministic answers on synthetic records only and is not an invoice extraction accuracy result.
-
-For local graph chat through Ollama, install a model you want to use, then set `GRAPH_RAG_BACKEND=ollama`, `GRAPH_RAG_MODEL=<installed-model-name>`, and `OLLAMA_HOST=http://127.0.0.1:11434`. Select **Use configured model** in the chat panel. Calls stay on loopback, are capped at 10 per hour, and repeat questions use the cache. The model cannot write to the graph.
-
-On **Ask Knowledge**, choose **Agent · plan, retrieve, verify** to run the agent workflow against the live SQLite graph projection. It plans the query, selects keyword and graph retrieval, fuses and reranks evidence, builds a cited evidence packet, generates an answer, verifies support, and records a trace under `runs/agentic_rag/`. The agent defaults to local Ollama using `GRAPH_RAG_MODEL` and `OLLAMA_HOST`. To use OpenRouter instead, set `AGENT_LLM_PROVIDER=openrouter`, add `OPENROUTER_API_KEY` to the ignored `.env` file, and set `OPENROUTER_MODEL=qwen/qwen3.8-flash` (or another supported model ID). OpenRouter receives the retrieved graph evidence and question, so enable it only when that data may leave this computer. **Standard graph retrieval** remains available as the existing deterministic path. The agent reads reviewed evidence by default, plus clearly labeled synthetic email demo records; it does not write to SQLite or Neo4j. The answer graph is limited to retrieved evidence and connected records, outlines cited source nodes, and lets you inspect node facts and relationship direction.
-
-Ask Knowledge builds clickable sample questions from the entities currently in the graph. Query examples for lookup, account summaries, relationships, email analysis, comparisons, aggregation, review risks, and follow-ups are in `docs/agent_query_examples.md`.
-
-For local Ollama agent answers, set `AGENT_LLM_PROVIDER=ollama`, `GRAPH_RAG_MODEL=qwen2.5:3b-instruct`, and `OLLAMA_HOST=http://127.0.0.1:11434`. Qwen 3 may spend time in its separate thinking channel and return no answer text through the current client.
-
-Agent turns are appended locally to `runs/agent_conversations.jsonl`, including the question, recent chat context, answer, citations, and conversation ID. This path is ignored by Git and can be changed with `PAPERTRAIL_CONVERSATION_LOG` in `.env`.
-
-To use Anthropic instead, configure `GRAPH_RAG_API_KEY` and `GRAPH_RAG_MODEL`, set `GRAPH_RAG_BACKEND=anthropic`, and explicitly set `PAPERTRAIL_ALLOW_GRAPH_RAG_REMOTE=I_ACCEPT_GRAPH_DATA_LEAVES_THIS_DEVICE`. Only retrieved graph facts are sent to the hosted API. Hosted generation remains off by default.
-
-## Example Expected Behaviour
-
-### Ambiguous Entity Linking
-
-If an invoice names "Sri Venkateswara Traders Pvt Ltd" and the vendor master contains similar names, the system should show candidate matches and their supporting evidence. It should leave the link unresolved if the available evidence is insufficient.
-
-### Conditional Contract Clause
-
-If a contract states that it "may be renewed for a further term by mutual consent of the parties", the system should extract a conditional renewal clause. It should not assert that renewal has occurred or is guaranteed.
-
-These are required target behaviours. Their correctness must be verified through tests.
-
-## Evaluation
-
-The planned evaluation covers:
-
-- Entity and relationship precision, recall, and F1.
-- Evidence-support accuracy.
-- Entity-linking precision and candidate ranking.
-- Conditional-obligation interpretation.
-- Schema validity and correct abstention.
-- Latency, cost, failure rate, and reviewer corrections.
-
-Evaluation results will be added only after repeatable runs against labelled data.
-
-## Privacy and Security
-
-- Use synthetic documents during initial development.
-- Do not commit API keys or secrets.
-- Do not send sensitive documents to external services without appropriate approval.
-- Avoid logging raw document contents unless specifically justified and approved.
-- Document dataset provenance and licences.
-- Keep confidential documents and local evaluation artifacts out of the public repository.
-
-## Documentation
-
-- [`docs/functional.md`](./docs/functional.md) — requirements and acceptance criteria.
-- [`docs/DATA_CONTRACTS.md`](./docs/DATA_CONTRACTS.md) — extraction, evidence, ledger, and graph contracts.
-- [`docs/DATA_HANDLING.md`](./docs/DATA_HANDLING.md) — local/remote processing and privacy controls.
-- [`docs/EVALUATION.md`](./docs/EVALUATION.md) — benchmark workflow and metric definitions.
-- [`docs/MILESTONES_REPORT.md`](./docs/MILESTONES_REPORT.md) — delivered milestones and unrun evaluation work.
-- [`APPROACH.md`](./APPROACH.md) — target users, build-versus-reuse decisions, architecture, UX sketch, and approach.
-- [`docs/build-plan.md`](./docs/build-plan.md) — phased implementation sequence and exit evidence.
-- [`docs/prototype.html`](./docs/prototype.html) — static reviewer-flow UX prototype.
-- [`CODEX.md`](./CODEX.md) — coding-agent project handoff and next milestones.
-- [`ARTEFACT.md`](./ARTEFACT.md) — implementation history, evaluation results, limitations, and deployment status.
-
-## Contributions
-
-The team should record actual ownership, meaningful prototype changes, and reproducible evaluation results. Prototype tags should correspond to working, tested versions.
-
-## Licence
-
-The project licence has not yet been selected. Confirm the team's intended licence and any third-party dependency requirements before adding a licence file.
+Keep `.env`, API keys, review tokens, real invoices, local SQLite databases, vector indexes, and conversation logs out of Git. Ollama and local OCR can keep processing on the device. Hosted model routes transmit the question and retrieved evidence or document content to the configured provider; use them only when that transfer is permitted.
