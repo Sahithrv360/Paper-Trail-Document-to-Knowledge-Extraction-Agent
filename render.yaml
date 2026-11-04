@@ -13,8 +13,6 @@ services:
         value: 0.0.0.0
       - key: REVIEW_PORT
         value: 10000
-      - key: PAPERTRAIL_PUBLIC_HOSTS
-        sync: false
       - key: PAPERTRAIL_ENABLE_WATCHER
         value: "1"
       - key: WATCH_FOLDER

@@ -1517,8 +1517,11 @@ def main(argv=None):
         watcher_thread = threading.Thread(target=watch_and_process, name="papertrail-watcher", daemon=True)
         watcher_thread.start()
     allowed_hosts = {item.strip().lower() for item in os.getenv("PAPERTRAIL_PUBLIC_HOSTS", "").split(",") if item.strip()}
+    render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip().lower()
+    if render_hostname:
+        allowed_hosts.add(render_hostname)
     if args.host not in ("127.0.0.1", "::1", "localhost") and not allowed_hosts:
-        raise SystemExit("Public binding requires PAPERTRAIL_PUBLIC_HOSTS with the deployed hostname(s).")
+        raise SystemExit("Public binding requires a host allow-list or the platform hostname.")
     if allowed_hosts:
         allowed_hosts.update(LOOPBACK_HOSTS)
     server = create_server(service, args.host, args.port, os.getenv("REVIEW_TOKEN") or None,

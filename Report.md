@@ -90,7 +90,7 @@ Use Python 3.11+ (3.12 recommended) and Node.js. Install the Python package and 
 
 1. Push the repository to a Git provider connected to Render.
 2. Create a Render service from the repository using the included blueprint.
-3. Set `PAPERTRAIL_PUBLIC_HOSTS` to the service hostname (for example, `paper-trail.onrender.com`) and set `REVIEW_TOKEN` to a generated high-entropy secret.
+3. Set `REVIEW_TOKEN` to a generated high-entropy secret. The server accepts Render's assigned `RENDER_EXTERNAL_HOSTNAME` automatically; add `PAPERTRAIL_PUBLIC_HOSTS` only for additional custom hostnames.
 4. Keep the persistent disk mounted at `/var/data`; confirm all three data paths point there.
 5. Deploy, open the service URL, and append `/#token=<your-review-token>` to the browser URL.
 6. Upload the synthetic smoke invoice and check whether it reaches extracted/reviewable state.
@@ -119,7 +119,7 @@ Important settings include:
 - `PAPERTRAIL_ALLOW_REMOTE`, `VISION_API_KEY`, `VISION_API_MODEL`: explicit hosted extraction setup.
 - `GRAPH_RAG_BACKEND`, `OLLAMA_HOST`, `AGENT_LLM_PROVIDER`: graph answer generation.
 - `REVIEW_HOST`, `REVIEW_PORT`, `REVIEW_TOKEN`: web service binding and authentication.
-- `PAPERTRAIL_PUBLIC_HOSTS`: exact hostnames accepted in public deployment mode.
+- `PAPERTRAIL_PUBLIC_HOSTS`: optional additional hostnames accepted in public deployment mode; Render's assigned hostname is accepted automatically.
 - `PAPERTRAIL_ENABLE_WATCHER`: enable the in-process watcher for the all-in-one deployment.
 
 Use `.env.example` as the configuration reference. Keep `.env` and provider keys out of source control.
