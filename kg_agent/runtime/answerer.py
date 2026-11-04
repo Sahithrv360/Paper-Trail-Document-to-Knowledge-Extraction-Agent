@@ -16,9 +16,6 @@ WORKFLOW (follow silently)
 3. Never paste raw chunks. Extract the meaning. Never output field names (email_id, body, ConversationSummary) or truncation markers ("...").
 4. Verify: separate what is CONFIRMED (a recorded event or document says so) from what is only ASKED, PROPOSED, or IMPLIED. A question in an email is not a confirmation. If sources conflict, say so. If the evidence doesn't answer the question, say that plainly and do not fill gaps from general knowledge.
 
-SYNTHETIC / DEMO DATA
-If a source is labelled SYNTHETIC, DEMO, FICTIONAL, or "not evidence", mention it ONCE in a single short line near the top. Still answer using the content, but don't present it as real-world proof of an invoice, payment, or approval. Don't repeat the label in every sentence.
-
 ANSWER FORMAT
 Natural prose, as a person would speak. No headers unless the answer has several distinct parts.
 1. Lead with the answer in 1-2 sentences.
@@ -39,15 +36,13 @@ NEVER
 
 EXAMPLE
 Q: "What's the status of payment for Shaw, Williams and Johnston?"
-A: "Payment hasn't been confirmed. In the thread, the customer asked Shaw, Williams and Johnston to share the expected payment timing once the AP review is complete, but no payment is recorded and the review outcome isn't in the retrieved messages. (Note: these records are labelled synthetic demo data.) The AP review result is the next thing to check. Sources: N1 (conversation summary), N3 (email to Shaw, Williams and Johnston)."""
+A: "Payment hasn't been confirmed. In the thread, the customer asked Shaw, Williams and Johnston to share the expected payment timing once the AP review is complete, but no payment is recorded and the review outcome isn't in the retrieved messages. The AP review result is the next thing to check. Sources: N1 (conversation summary), N3 (email to Shaw, Williams and Johnston)."""
 
-RETRY_INSTRUCTION = """Your previous answer failed citation or output validation. Retry once. Write a short, natural prose answer using inline [N#] markers. End with one line beginning exactly 'Sources:' and list each cited marker once with its supplied human source description. Do not include raw fields, excerpts, or internal IDs. Distinguish a request from a confirmed event. If synthetic/demo sources are present, include exactly one short note near the top."""
+RETRY_INSTRUCTION = """Your previous answer failed citation or output validation. Retry once. Write a short, natural prose answer using inline [N#] markers. End with one line beginning exactly 'Sources:' and list each cited marker once with its supplied human source description. Do not include raw fields, excerpts, or internal IDs. Distinguish a request from a confirmed event."""
 
 _CITATION = re.compile(r"\[(N\d+)\]")
 _SOURCES_LINE = re.compile(r"(?im)^Sources:\s*(.+?)\s*$")
 _UNSAFE = re.compile(r"\bemail_id\b|\bConversationSummary\b|\bbody\s*:", re.IGNORECASE)
-_SYNTHETIC_NOTE = re.compile(
-    r"(?i)\(?\s*Note:\s*[^.\n]*(?:synthetic|demo|fictional|not evidence)[^.\n]*\.?\s*\)?")
 
 
 class CitationFormatError(ValueError):
@@ -70,6 +65,8 @@ class AnswerGenerator:
 
     @staticmethod
     def _safe_answer(answer: str) -> str:
+        answer = re.sub(r"(?im)^\s*Note:\s*[^\n]*(?:synthetic|demo|fictional)[^\n]*\n?", "", answer)
+        answer = re.sub(r"(?i)\(?\s*Note:\s*[^.\n]*(?:synthetic|demo|fictional)[^.\n]*\.?\s*\)?", "", answer)
         if _UNSAFE.search(answer):
             raise OutputSafetyError("answer contains a plumbing field")
         if "..." in answer or "…" in answer:
@@ -134,16 +131,6 @@ class AnswerGenerator:
             raise AnswerContractError("payment-status answer omitted the required not-confirmed list")
 
     @staticmethod
-    def _ensure_synthetic_note(answer: str, context: BuiltContext) -> str:
-        answer = _SYNTHETIC_NOTE.sub("", answer).strip()
-        if context.source_metadata.get("has_synthetic"):
-            answer = re.sub(r"(?i)\b(?:these|the|some) (?:cited |retrieved )?(?:records|sources) "
-                            r"(?:are|were) labelled (?:as )?(?:synthetic|demo|fictional)[^.\n]*\.?", "", answer)
-            answer = re.sub(r"\s{2,}", " ", answer).strip()
-            return "Note: Some retrieved records are labelled synthetic/demo data.\n\n" + answer
-        return answer
-
-    @staticmethod
     def _source_list(context: BuiltContext) -> str:
         sources = context.source_metadata.get("sources", {})
         return "; ".join(f"{citation} ({metadata['description']})"
@@ -151,7 +138,6 @@ class AnswerGenerator:
 
     def _messages(self, question: str, context: BuiltContext, retry: bool) -> list[dict]:
         user_text = (f"Question: {question}\n"
-                     f"Synthetic/demo source flag: {'yes' if context.source_metadata.get('has_synthetic') else 'no'}\n"
                      f"Evidence:\n{context.text}\n"
                      f"Available human source descriptions: {self._source_list(context)}")
         messages = [{"role": "system", "content": ANSWER_SYSTEM_PROMPT}]
@@ -178,7 +164,6 @@ class AnswerGenerator:
                 clean = self._safe_answer(raw)
                 citations = self._citations(clean, context, require_sources=True)
                 self._validate_payment_status_contract(question, clean)
-                clean = self._ensure_synthetic_note(clean, context)
                 clean = self._safe_answer(clean)
                 success_log = "Answer generation succeeded on attempt %d%s"
                 success_args = (attempt, f" after {failures[0]}" if failures else "")
@@ -195,8 +180,6 @@ class AnswerGenerator:
                                attempt, reason, raw)
 
         logger.error("Answer generation failed after both attempts: %s", " | ".join(failures))
-        synthetic_note = ("Note: Some retrieved records are labelled synthetic/demo data.\n"
-                         if context.source_metadata.get("has_synthetic") else "")
         source_descriptions = "; ".join(item.get("description", "")
             for item in context.source_metadata.get("sources", {}).values()
             if item.get("description")) or "the available records"
@@ -211,7 +194,7 @@ class AnswerGenerator:
             fallback = ("I couldn't reliably summarize the available records. Please try narrowing the question.\n"
                         "Citations couldn't be attached to this answer.")
         return AnswerDraft(
-            answer=synthetic_note + fallback,
+            answer=fallback,
             citations=[], confidence=0.0,
             reasoning_summary="Both answer attempts failed citation or output validation.",
             missing_info="; ".join(failures))

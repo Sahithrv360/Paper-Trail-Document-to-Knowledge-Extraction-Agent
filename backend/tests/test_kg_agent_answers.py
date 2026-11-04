@@ -1,12 +1,15 @@
 import unittest
+import tempfile
 from types import SimpleNamespace
 
 from backend.app.agent_evidence import build_evidence_cards, sentence_snippet
-from kg_agent.models import Edge, Evidence, Node
+from kg_agent.models import Edge, Evidence, GraphSchema, Node
+from kg_agent.runtime.agent import BusinessQAAgent
 from kg_agent.runtime.answerer import AnswerGenerator, CitationFormatError
 from kg_agent.runtime.context_builder import build_context
 from kg_agent.runtime.query_transformer import QueryTransformer
 from kg_agent.runtime.scoping import scope_evidence_to_question
+from kg_agent.runtime.tools.graph import buyer_product_search, party_product_search
 
 
 QUERY = "What's the payment status for Shaw, Williams and Johnston?"
@@ -80,7 +83,7 @@ class AgentAnswerTests(unittest.TestCase):
         self.assertIn("payment is planned after approval", answer.answer.lower())
         self.assertIn("not confirmed: payment sent or received", answer.answer.lower())
         self.assertNotIn("payment was sent", answer.answer.lower())
-        self.assertEqual(answer.answer.count("Note: Some retrieved records are labelled synthetic/demo data."), 1)
+        self.assertNotIn("synthetic/demo data", answer.answer.lower())
         self.assertEqual(answer.citations, ["N1", "N2", "N3"])
 
     def test_sample_followup_resolves_history_and_answers_only_new_question(self):
@@ -148,7 +151,7 @@ class AgentAnswerTests(unittest.TestCase):
         self.assertNotIn("email_id", prompt)
         self.assertNotIn("body:", prompt.lower())
 
-    def test_payment_status_regression_and_single_synthetic_note(self):
+    def test_payment_status_regression_omits_synthetic_label(self):
         llm = FakeLLM([
             "Payment hasn't been confirmed. The email asks for expected payment timing once "
             "the AP review is complete, but no payment is recorded and the review outcome "
@@ -162,7 +165,7 @@ class AgentAnswerTests(unittest.TestCase):
         self.assertIn("payment hasn't been confirmed", answer.answer.lower())
         self.assertIn("asks for expected payment timing", answer.answer.lower())
         self.assertIn("review outcome", answer.answer.lower())
-        self.assertEqual(answer.answer.count("Note: Some retrieved records are labelled synthetic/demo data."), 1)
+        self.assertNotIn("synthetic/demo data", answer.answer.lower())
         self.assertNotIn("email_id", answer.answer)
         self.assertNotIn("ConversationSummary", answer.answer)
         self.assertNotIn("body:", answer.answer.lower())
@@ -207,7 +210,7 @@ class AgentAnswerTests(unittest.TestCase):
         self.assertIn("Citations couldn't be attached", answer.answer)
         self.assertNotIn("email_id", answer.answer)
         self.assertNotIn("raw retrieved", answer.answer)
-        self.assertEqual(answer.answer.count("Note: Some retrieved records are labelled synthetic/demo data."), 1)
+        self.assertNotIn("synthetic/demo data", answer.answer.lower())
 
     def test_sanitizer_failure_retries_before_returning_answer(self):
         llm = FakeLLM([
@@ -360,7 +363,7 @@ class AgentAnswerTests(unittest.TestCase):
         self.assertFalse(any(number in str(cards) for number in
             ("10060256", "10372826", "10299181", "10541959")))
         self.assertIn("Not confirmed: payment, approval, or AP completion", answer.answer)
-        self.assertEqual(answer.answer.count("Note: Some retrieved records are labelled synthetic/demo data."), 1)
+        self.assertNotIn("synthetic/demo data", answer.answer.lower())
         self.assertNotIn("email_id", answer.answer)
         self.assertNotIn("body:", answer.answer.lower())
         self.assertNotIn("35%", str(cards))
@@ -372,6 +375,79 @@ class AgentAnswerTests(unittest.TestCase):
             "SYNTHETIC DEMO EMAIL — Could you share expected payment timing once AP review is complete? "
             "No payment is recorded... trailing fragment")
         self.assertEqual(snippet, "Could you share expected payment timing once AP review is complete?")
+
+    def test_product_buyer_query_traverses_item_invoice_customer_with_citations(self):
+        customer = Node(id="customer-1", type="Customer", name="Northwind Demo")
+        invoice = Node(id="invoice-1", type="Invoice", name="PT-100",
+            properties={"invoice_number": "PT-100", "review_status": "needs_review"})
+        item = Node(id="item-1", type="LineItem", name="Silk rug",
+            properties={"description": "Handmade Carpet Hand Knotted Silk Rug"})
+        edges = [Edge(id="contains-item", source=invoice.id, target=item.id, type="CONTAINS"),
+                 Edge(id="billed-to", source=customer.id, target=invoice.id, type="BILLED_TO")]
+        nodes = [customer, invoice, item]
+        store = SimpleNamespace(all_nodes=lambda: nodes, edges=edges,
+            schema=lambda: GraphSchema(entity_types=[], relation_types=[], node_count=3,
+                                       edge_count=2, chunk_count=0))
+        question = "who all have bought the handmade silkrug carpet"
+        self.assertIn("graph", QueryTransformer(store).transform(
+            "who bought the handmade silk rug").tools)
+
+        matches = buyer_product_search(store, question)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(set(matches[0].node_ids), {customer.id, invoice.id, item.id})
+        self.assertEqual(set(matches[0].edge_ids), {"contains-item", "billed-to"})
+
+        with tempfile.TemporaryDirectory() as runs_dir:
+            response = BusinessQAAgent(store, runs_dir=runs_dir).run(question, mode="agent")
+        self.assertIn("Northwind Demo", response.answer)
+        self.assertIn("PT-100", response.answer)
+        self.assertEqual(len(response.citations), 1)
+        self.assertEqual(response.confidence, 0.9)
+
+    def test_concatenated_sneaker_query_traverses_invoice_to_vendor(self):
+        vendor = Node(id="vendor-1", type="Vendor", name="Carney-Rogers")
+        invoice = Node(id="invoice-jordan", type="Invoice", name="20850516",
+            properties={"invoice_number": "20850516", "review_status": "needs_review"})
+        item = Node(id="jordan-item", type="LineItem", name="Jordan sneakers",
+            properties={"description": "Jordan B'Loyal Boys Grade SchoolSneakersUS3Y"})
+        edges = [Edge(id="jordan-contains", source=invoice.id, target=item.id, type="CONTAINS"),
+                 Edge(id="vendor-issued", source=vendor.id, target=invoice.id, type="ISSUED")]
+        nodes = [vendor, invoice, item]
+        store = SimpleNamespace(all_nodes=lambda: nodes, edges=edges,
+            schema=lambda: GraphSchema(entity_types=[], relation_types=[], node_count=3,
+                                       edge_count=2, chunk_count=0))
+        question = "which vendor sold jordansneakers"
+        self.assertIn("graph", QueryTransformer(store).transform(question).tools)
+        matches = party_product_search(store, question)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(set(matches[0].node_ids), {vendor.id, invoice.id, item.id})
+        self.assertEqual(set(matches[0].edge_ids), {"jordan-contains", "vendor-issued"})
+        with tempfile.TemporaryDirectory() as runs_dir:
+            response = BusinessQAAgent(store, runs_dir=runs_dir).run(question, mode="agent")
+        self.assertIn("Carney-Rogers", response.answer)
+        self.assertIn("20850516", response.answer)
+        self.assertIn("needs_review", response.answer)
+        self.assertEqual(len(response.citations), 1)
+        self.assertNotIn("synthetic/demo data", response.answer.lower())
+
+    def test_new_catalog_item_can_be_searched_without_product_specific_rules(self):
+        customer = Node(id="customer-fan", type="Customer", name="Fan Buyer")
+        invoice = Node(id="invoice-fan", type="Invoice", name="FAN-100",
+            properties={"invoice_number": "FAN-100", "review_status": "needs_review"})
+        item = Node(id="fan-item", type="LineItem", name="Ultra Light Desk Fan",
+            properties={"description": "Ultra Light Desk Fan with Remote"})
+        edges = [Edge(id="fan-contains", source=invoice.id, target=item.id, type="CONTAINS"),
+                 Edge(id="fan-billed-to", source=invoice.id, target=customer.id, type="BILLED_TO")]
+        nodes = [customer, invoice, item]
+        store = SimpleNamespace(all_nodes=lambda: nodes, edges=edges,
+            schema=lambda: GraphSchema(entity_types=[], relation_types=[], node_count=3,
+                                       edge_count=2, chunk_count=0))
+        question = "who purchased ultralightdeskfan"
+        self.assertIn("graph", QueryTransformer(store).transform(question).tools)
+        matches = party_product_search(store, question)
+        self.assertEqual(len(matches), 1)
+        self.assertIn("Fan Buyer", matches[0].text)
+        self.assertIn("FAN-100", matches[0].text)
 
     def test_card_titles_and_invoice_nested_email_are_canonical(self):
         nodes = {

@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: paper-trail
+    runtime: docker
+    plan: 1c-2g
+    healthCheckPath: /
+    disk:
+      name: paper-trail-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: REVIEW_HOST
+        value: 0.0.0.0
+      - key: REVIEW_PORT
+        value: 10000
+      - key: PAPERTRAIL_PUBLIC_HOSTS
+        sync: false
+      - key: PAPERTRAIL_ENABLE_WATCHER
+        value: "1"
+      - key: WATCH_FOLDER
+        value: /var/data/watched
+      - key: DATABASE_PATH
+        value: /var/data/paper_trail.sqlite3
+      - key: GRAPH_PATH
+        value: /var/data/paper_trail_graph.sqlite3
+      - key: EXTRACTION_PROVIDER
+        value: ocr
+      - key: PARSER_ENGINE
+        value: rapidocr
+      - key: MAX_FILE_MB
+        value: "25"
+      - key: REVIEW_TOKEN
+        sync: false

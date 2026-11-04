@@ -5,6 +5,142 @@ import re
 from kg_agent.models import Evidence
 
 
+_QUESTION_STOPWORDS = {
+    "who", "which", "what", "all", "have", "has", "had", "did", "does", "do",
+    "the", "a", "an", "for", "of", "to", "with", "by", "customer", "customers",
+    "buyer", "buyers", "vendor", "vendors", "seller", "sellers", "bought", "buy",
+    "buys", "buying", "purchase", "purchases", "purchased", "purchasing", "ordered",
+    "orders", "sold", "sell", "sells", "selling", "from", "me", "show", "list",
+}
+_ATTRIBUTE_TERMS = {"handmade", "handknotted", "handwoven"}
+_CATEGORY_TERMS = {"rug", "rugs", "carpet", "carpets"}
+
+
+def _split_catalog_word(word: str, vocabulary: set[str]) -> list[str]:
+    """Split a joined question token using words actually present in item descriptions."""
+    if word in vocabulary:
+        return [word]
+    memo = {}
+
+    def visit(position):
+        if position == len(word):
+            return []
+        if position in memo:
+            return memo[position]
+        candidates = sorted((candidate for candidate in vocabulary
+            if len(candidate) >= 3 and word.startswith(candidate, position)),
+            key=lambda candidate: (-len(candidate), candidate))
+        for candidate in candidates:
+            suffix = visit(position + len(candidate))
+            if suffix is not None:
+                memo[position] = [candidate, *suffix]
+                return memo[position]
+        memo[position] = None
+        return None
+
+    return visit(0) or [word]
+
+
+def party_product_search(store, question: str, *, limit: int = 100) -> list[Evidence]:
+    """Find invoice parties for product questions through LineItem -> Invoice.
+
+    Product terms may be concatenated in the question ("jordansneakers") or split
+    differently in OCR text. Evidence retains both relationship edges and invoice status.
+    """
+    lower = question.casefold()
+    buyer = bool(re.search(r"\b(?:bought|buy|buys|buying|purchase|purchases|purchased|"
+                           r"purchasing|ordered|orders)\b", lower))
+    seller = bool(re.search(r"\b(?:sold|sell|sells|selling)\b", lower)) and not buyer
+    if not buyer and not seller:
+        return []
+    party_type, relation = ("Customer", "BILLED_TO") if buyer else ("Vendor", "ISSUED")
+    nodes = {node.id: node for node in store.all_nodes()}
+    item_descriptions = [str(node.properties.get("description") or node.name)
+                         for node in nodes.values() if node.type == "LineItem"]
+    vocabulary = set()
+    for description in item_descriptions:
+        split = re.sub(r"([a-z])([A-Z])", r"\1 \2", description)
+        vocabulary.update(re.findall(r"[a-z0-9]+", split.casefold()))
+    raw_terms = re.findall(r"[a-z0-9]+", lower)
+    terms = [part for raw in raw_terms if raw not in _QUESTION_STOPWORDS
+             for part in _split_catalog_word(raw, vocabulary)]
+    if not terms:
+        return []
+    handmade_requested = any(term in terms for term in ("handmade", "handknotted", "handwoven"))
+    silk_requested = "silk" in terms
+    rug_requested = any(term in _CATEGORY_TERMS for term in terms)
+
+    edges = list(getattr(store, "edges", []))
+    invoice_for_item = {}
+    parties_for_invoice = {}
+    for edge in edges:
+        if edge.type == "CONTAINS":
+            left, right = nodes.get(edge.source), nodes.get(edge.target)
+            if left and right:
+                if left.type == "LineItem" and right.type == "Invoice":
+                    invoice_for_item[left.id] = (right.id, edge)
+                elif right.type == "LineItem" and left.type == "Invoice":
+                    invoice_for_item[right.id] = (left.id, edge)
+        elif edge.type == relation:
+            left, right = nodes.get(edge.source), nodes.get(edge.target)
+            if left and right:
+                if left.type == party_type and right.type == "Invoice":
+                    parties_for_invoice.setdefault(right.id, []).append((left.id, edge))
+                elif right.type == party_type and left.type == "Invoice":
+                    parties_for_invoice.setdefault(left.id, []).append((right.id, edge))
+
+    matches = {}
+    for item_id, (invoice_id, contains_edge) in invoice_for_item.items():
+        item, invoice = nodes[item_id], nodes[invoice_id]
+        description = " ".join(str(item.properties.get("description") or item.name).split())
+        split_description = re.sub(r"([a-z])([A-Z])", r"\1 \2", description)
+        normalized = re.sub(r"[^a-z0-9]+", " ", split_description.casefold())
+        compact = normalized.replace(" ", "")
+        desc_terms = normalized.split()
+        # Match each requested product term against catalog words or compact spellings.
+        requested = [term.rstrip("s") for term in terms
+                     if term not in _ATTRIBUTE_TERMS and term not in _CATEGORY_TERMS]
+        if not all(any(word.rstrip("s").startswith(term) or term.startswith(word.rstrip("s"))
+                       for word in desc_terms) or term in compact for term in requested):
+            continue
+        if silk_requested and "silk" not in compact:
+            continue
+        if rug_requested and not any(term in compact for term in ("rug", "carpet")):
+            continue
+        if handmade_requested and not any(term in compact for term in ("handmade", "handknotted", "handwoven")):
+            continue
+        for party_id, party_edge in parties_for_invoice.get(invoice_id, []):
+            party = nodes[party_id]
+            invoice_number = str(invoice.properties.get("invoice_number") or invoice.name)
+            key = (party_id, invoice_id)
+            match = matches.setdefault(key, {"party": party, "invoice": invoice,
+                "invoice_number": invoice_number, "descriptions": [], "edge_ids": set(),
+                "node_ids": {party_id, invoice_id}})
+            if description not in match["descriptions"]:
+                match["descriptions"].append(description)
+            match["edge_ids"].update((contains_edge.id, party_edge.id))
+            match["node_ids"].add(item_id)
+
+    results = []
+    for index, match in enumerate(sorted(matches.values(), key=lambda row:
+            (row["party"].name.casefold(), row["invoice_number"])), 1):
+        review_status = match["invoice"].properties.get("review_status", "unreviewed")
+        description = "; ".join(match["descriptions"])
+        action = "is billed to" if buyer else "issued"
+        text = (f"{party_type} {match['party'].name} {action} invoice "
+                f"{match['invoice_number']}, which contains line item {description!r}. "
+                f"Review status: {review_status}.")
+        results.append(Evidence(id=f"party-product:{index}", source_tool="graph",
+            kind="triple", text=text, score=1.0, doc_id=match["invoice"].id,
+            node_ids=sorted(match["node_ids"]), edge_ids=sorted(match["edge_ids"])))
+    return results[:max(0, limit)]
+
+
+def buyer_product_search(store, question: str, *, limit: int = 100) -> list[Evidence]:
+    """Backward-compatible name for the generic invoice-party product lookup."""
+    return party_product_search(store, question, limit=limit)
+
+
 def graph_search(store, seed_ids: list[str], *, hops: int = 2,
                  rel_types: list[str] | None = None, max_nodes: int = 80,
                  limit: int = 20) -> list[Evidence]:

@@ -369,7 +369,9 @@ class ReviewService:
             "watch_folder": str(WATCH_FOLDER), "watch_folder_exists": WATCH_FOLDER.is_dir(),
             "supported_extensions": sorted(SUPPORTED_SUFFIXES),
             "max_file_mb": MAX_FILE_BYTES // (1024 * 1024),
-            "watcher_process": "separate process; availability is not monitored",
+            "watcher_process": ("enabled in review server process"
+                if os.getenv("PAPERTRAIL_ENABLE_WATCHER", "0").lower() in {"1", "true", "yes"}
+                else "separate process; availability is not monitored"),
             "registered_documents": len(documents),
             "queued_documents": sum(row.get("file_status") in {"queued", "pending"} for row in documents),
             "failed_documents": sum(row.get("file_status") == "failed" for row in documents),
@@ -534,13 +536,26 @@ class ReviewService:
                   include_unreviewed: bool = False, limit: int = 8,
                   mode: str = "hybrid", history=None, request_id: str = None) -> dict:
         if mode == "agent":
-            from ..agentic_rag import run_papertrail_agent
+            from ..agentic_rag import PaperTrailAgentStore, run_papertrail_agent
+            from kg_agent.runtime.tools.graph import party_product_search
 
             request_id = request_id or secrets.token_hex(16)
             self._update_agent_run(request_id, {"status": "running", "stage": "accepted"})
             graph_export = self.graph_export(reviewed_only=not include_unreviewed)
+            used_unreviewed_product_fallback = False
             if not include_unreviewed:
                 all_export = self.graph.export(reviewed_only=False)
+                reviewed_product_matches = party_product_search(
+                    PaperTrailAgentStore(graph_export), question, limit=1)
+                all_product_matches = party_product_search(
+                    PaperTrailAgentStore(all_export), question, limit=1)
+                if not reviewed_product_matches and all_product_matches:
+                    # Product lookups should expose existing invoice facts even when
+                    # every matching machine extraction is awaiting review. The answer
+                    # carries needs_review on every citation so this is never presented
+                    # as reviewed evidence.
+                    graph_export = all_export
+                    used_unreviewed_product_fallback = True
                 synthetic_edge_rows = [edge for edge in all_export.get("edges", [])
                     if (edge.get("props") or {}).get("synthetic") is True]
                 synthetic_linked_ids = {node_id for edge in synthetic_edge_rows
@@ -912,6 +927,9 @@ class ReviewService:
                 self._update_agent_run(request_id, {"status": "failed", "stage": "failed",
                                                     "error": type(exc).__name__})
                 raise
+            if used_unreviewed_product_fallback:
+                result["answer"] = ("These matching invoice records still need review.\n\n"
+                                     + result.get("answer", ""))
             self._update_agent_run(request_id, {"status": "completed", "stage": "completed"})
             node_export = {node["id"]: node for node in graph_export.get("nodes", [])}
             from ..agent_evidence import build_evidence_cards
@@ -959,7 +977,8 @@ class ReviewService:
                     "detail": json.dumps(detail, ensure_ascii=False, default=str)})
             return {"answer": result.get("answer"), "sources": list(sources.values()),
                 "evidence_cards": evidence_cards,
-                "links": links, "retrieval_count": len(links), "reviewed_only": not include_unreviewed,
+                "links": links, "retrieval_count": len(links),
+                "reviewed_only": not include_unreviewed and not used_unreviewed_product_fallback,
                 "answer_mode": f"kg_agent_{result.get('model_provider', 'none')}" if generate
                                else "kg_agent_deterministic",
                 "model_name": result.get("model_name"),
@@ -1122,7 +1141,8 @@ class ReviewService:
                 "document": self.document(document_id)}
 
 
-def make_handler(service: ReviewService, token: str):
+def make_handler(service: ReviewService, token: str, allowed_hosts=None):
+    allowed_hosts = {host.lower() for host in (allowed_hosts or LOOPBACK_HOSTS)}
     class Handler(BaseHTTPRequestHandler):
         server_version = "PaperTrailReview"
         sys_version = ""
@@ -1213,7 +1233,7 @@ def make_handler(service: ReviewService, token: str):
         def _host_ok(self) -> bool:
             host = (self.headers.get("Host") or "").strip()
             name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
-            return name.lower() in LOOPBACK_HOSTS
+            return name.lower() in allowed_hosts
 
         def _origin_ok(self) -> bool:
             origin = self.headers.get("Origin")
@@ -1447,11 +1467,11 @@ def make_handler(service: ReviewService, token: str):
 
 
 def create_server(service: ReviewService, host: str = "127.0.0.1", port: int = 8765,
-                  token: str = None):
-    if host not in ("127.0.0.1", "::1", "localhost"):
-        raise ValueError("The review server only binds to a loopback address")
+                  token: str = None, allowed_hosts=None):
+    if host not in ("127.0.0.1", "::1", "localhost") and not allowed_hosts:
+        raise ValueError("A non-loopback bind requires an explicit host allow-list")
     token = token or secrets.token_urlsafe(24)
-    server = ThreadingHTTPServer((host, port), make_handler(service, token))
+    server = ThreadingHTTPServer((host, port), make_handler(service, token, allowed_hosts))
     server.daemon_threads = True
     server.review_token = token
     return server
@@ -1467,7 +1487,7 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(description="Local Paper Trail review server")
     parser.add_argument("--port", type=int, default=int(os.getenv("REVIEW_PORT", "8765")))
-    parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "::1", "localhost"])
+    parser.add_argument("--host", default=os.getenv("REVIEW_HOST", "127.0.0.1"))
     args = parser.parse_args(argv)
     settings = Settings.from_env()
     neo4j_driver = None
@@ -1477,15 +1497,47 @@ def main(argv=None):
     service = ReviewService(GraphStore(GRAPH_PATH), DocumentRegistry(DATABASE_PATH), settings,
                             neo4j_driver=neo4j_driver,
                             neo4j_database=os.getenv("NEO4J_DATABASE") or None)
-    server = create_server(service, args.host, args.port, os.getenv("REVIEW_TOKEN") or None)
+    watcher_stop = threading.Event()
+    watcher_thread = None
+    if os.getenv("PAPERTRAIL_ENABLE_WATCHER", "0").lower() in {"1", "true", "yes"}:
+        from ..config import MAX_FILE_BYTES, POLL_INTERVAL_SECONDS, WATCH_FOLDER
+        from ..ingestion.watcher import FolderWatcher
+        from ..main import build_processor
+        service.registry.recover_interrupted_jobs()
+        folder_watcher = FolderWatcher(WATCH_FOLDER, service.registry, MAX_FILE_BYTES)
+        processor = build_processor(service.registry, settings)
+
+        def watch_and_process():
+            while not watcher_stop.is_set():
+                folder_watcher.scan_once()
+                if processor:
+                    processor.process_pending()
+                watcher_stop.wait(POLL_INTERVAL_SECONDS)
+
+        watcher_thread = threading.Thread(target=watch_and_process, name="papertrail-watcher", daemon=True)
+        watcher_thread.start()
+    allowed_hosts = {item.strip().lower() for item in os.getenv("PAPERTRAIL_PUBLIC_HOSTS", "").split(",") if item.strip()}
+    if args.host not in ("127.0.0.1", "::1", "localhost") and not allowed_hosts:
+        raise SystemExit("Public binding requires PAPERTRAIL_PUBLIC_HOSTS with the deployed hostname(s).")
+    if allowed_hosts:
+        allowed_hosts.update(LOOPBACK_HOSTS)
+    server = create_server(service, args.host, args.port, os.getenv("REVIEW_TOKEN") or None,
+                           allowed_hosts or None)
     host = f"[{args.host}]" if ":" in args.host else args.host
-    print(f"Paper Trail UI: http://{host}:{server.server_address[1]}/#token={server.review_token}")
-    print("The React app is served at this address; keep the one-time URL private.")
+    if args.host not in ("127.0.0.1", "::1", "localhost"):
+        print(f"Paper Trail is listening on {args.host}:{server.server_address[1]}.")
+        print("Open the deployed HTTPS URL and add your configured REVIEW_TOKEN to its URL fragment.")
+    else:
+        print(f"Paper Trail UI: http://{host}:{server.server_address[1]}/#token={server.review_token}")
+        print("The React app is served at this address; keep the one-time URL private.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        watcher_stop.set()
+        if watcher_thread is not None:
+            watcher_thread.join(timeout=10)
         server.server_close()
         if neo4j_driver is not None:
             neo4j_driver.close()

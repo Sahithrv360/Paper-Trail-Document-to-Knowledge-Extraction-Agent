@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 
-from kg_agent.models import AgentResponse, Evidence
+from kg_agent.models import AgentResponse, AnswerDraft, Evidence
 from kg_agent.runtime.answerer import AnswerGenerator
 from kg_agent.runtime.context_builder import build_context
 from kg_agent.runtime.fusion import reciprocal_rank_fusion
@@ -17,7 +17,8 @@ from kg_agent.runtime.rerank import EvidenceReranker
 from kg_agent.runtime.scoping import scope_evidence_to_question
 from kg_agent.runtime.tools.dense import PersistentDenseIndex
 from kg_agent.runtime.tools.graph import (deterministic_aggregation,
-                                          graph_global_search, graph_search)
+                                          party_product_search, graph_global_search,
+                                          graph_search)
 from kg_agent.runtime.tools.keyword import keyword_search
 from kg_agent.runtime.verifier import AnswerVerifier
 
@@ -158,6 +159,53 @@ class BusinessQAAgent:
                         "selection_rule": "highest reviewed invoice count; alphabetical tie-break"})
                     emit_progress(trace["steps"][-1])
         selected_tools = self._tools_for(mode, plan)
+        if "graph" in selected_tools:
+            product_evidence = party_product_search(self.store, plan.standalone_question)
+            if product_evidence:
+                context = build_context(product_evidence,
+                    relationship_question=True, token_budget=self.context_token_budget)
+                citations = [item.citation_id for item in context.items]
+                role = "customer/invoice" if re.search(
+                    r"\b(?:bought|buy|buys|purchase|purchased|ordered)\b",
+                    plan.standalone_question, re.IGNORECASE) else "vendor/invoice"
+                lines = [f"Found {len(context.items)} matching {role} records. "
+                         "The descriptions are text matches; review the cited invoice status."]
+                for item in context.items:
+                    lines.append(f"- {item.evidence.text.removesuffix('.') } "
+                                 f"[{item.citation_id}]")
+                sources = context.source_metadata.get("sources", {})
+                source_list = ", ".join(
+                    f"{citation} ({sources[citation]['description']})"
+                    for citation in citations if sources.get(citation, {}).get("description"))
+                if source_list:
+                    lines.append(f"Sources: {source_list}.")
+                answer_text = "\n".join(lines)
+                trace["steps"].append({"step": "product_party_lookup",
+                    "match_count": len(product_evidence), "evidence_count": len(context.items),
+                    "match_rule": "matching line item connected through invoice to customer or vendor"})
+                trace["steps"].append({"step": "answer_generation", "citations": citations,
+                    "confidence": 0.9, "method": "deterministic_graph_lookup"})
+                verification = self.verifier.verify(plan.standalone_question,
+                    AnswerDraft(answer=answer_text, citations=citations, confidence=0.9), context)
+                trace["steps"].append({"step": "answer_verification",
+                    **verification.model_dump()})
+                if verification.supported:
+                    trace["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 2)
+                    trace["finished_at"] = datetime.now(timezone.utc).isoformat()
+                    self.runs_dir.mkdir(parents=True, exist_ok=True)
+                    trace_path = self.runs_dir / f"{trace['run_id']}.json"
+                    trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=2),
+                                          encoding="utf-8")
+                    trace["trace_file"] = str(trace_path)
+                    if verbose:
+                        print(json.dumps(trace, ensure_ascii=False, indent=2))
+                    cited_evidence = [item.evidence.model_copy(
+                        update={"citation_id": item.citation_id})
+                        for item in context.items]
+                    response = AgentResponse(answer=answer_text, citations=citations,
+                        evidence=cited_evidence, confidence=0.9, query_plan=plan, trace=trace)
+                    emit_progress(trace["steps"][-1])
+                    return response
         max_refinements = 2 if mode == "agent" else 0
         final = None
         final_evidence = []
@@ -215,9 +263,7 @@ class BusinessQAAgent:
         if not self.verifier.verify(plan.standalone_question, final, final_context,
                                     plan.sub_questions).supported:
             logger.warning("Final answer failed evidence verification; returning safe prose")
-            synthetic_note = ("Note: Some retrieved records are labelled synthetic/demo data.\n\n"
-                              if final_context.source_metadata.get("has_synthetic") else "")
-            final.answer = (synthetic_note + "I couldn't verify a complete answer from the available records.\n"
+            final.answer = ("I couldn't verify a complete answer from the available records.\n"
                             "Citations couldn't be attached to this answer.")
             final.citations = []
             final.confidence = 0.0

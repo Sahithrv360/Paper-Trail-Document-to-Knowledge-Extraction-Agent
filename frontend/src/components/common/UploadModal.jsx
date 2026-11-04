@@ -94,7 +94,11 @@ export default function UploadModal({ isOpen, onClose }) {
         {error && <div role="alert" style={{ color: '#b91c1c', marginTop: 12, fontSize: 13 }}><AlertCircle size={14} /> {error}</div>}
         {results && <div role="status" className="card" style={{ marginTop: 14, padding: 14 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 700, color: '#047857' }}><CheckCircle2 size={16} /> {results.uploaded.length} file(s) copied into the watched folder</div>
-          <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: '6px 0' }}>The separate watcher will register supported files on its next scan.</p>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: '6px 0' }}>
+            {runtime?.watcher_process?.includes('enabled in review server')
+              ? 'The integrated watcher will register and process supported files.'
+              : 'The separate watcher will register supported files on its next scan.'}
+          </p>
           {results.skipped > 0 && <p style={{ color: 'var(--text-muted)', fontSize: 12, margin: '4px 0' }}>{results.skipped} unsupported file(s) skipped.</p>}
           {results.failed.length > 0 && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 8 }}>{results.failed.slice(0, 6).map((item, index) => <div key={index}>{item}</div>)}{results.failed.length > 6 && <div>And {results.failed.length - 6} more failed files.</div>}</div>}
         </div>}

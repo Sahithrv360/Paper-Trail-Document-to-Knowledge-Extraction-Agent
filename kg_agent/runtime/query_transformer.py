@@ -49,6 +49,9 @@ class QueryTransformer:
         lower = question.casefold()
         if any(term in lower for term in GLOBAL_TERMS):
             intent, tools, mode = "summary_global", ["graph", "dense"], "global"
+        elif (re.search(r"\b(?:who|which)\b.*\b(?:bought|buy|buys|buying|purchase|purchases|purchased|purchasing|ordered|orders|sold|sell|sells|selling)\b", lower)
+              or re.search(r"\b(?:vendor|seller)\b.*\b(?:sold|sell|sells|selling)\b", lower)):
+            intent, tools, mode = "relationship", ["graph", "keyword"], "local"
         elif re.search(r"\b(how many|count|sum|total|number of)\b", lower):
             intent, tools, mode = "aggregation", ["graph", "keyword"], "local"
         elif any(term in lower for term in ("compare", "comparison", "versus", " vs ")):

@@ -214,6 +214,30 @@ class GraphReviewServiceTests(unittest.TestCase):
         self.assertTrue(all(support["review_status"] == "approved"
                             for node in reviewed["nodes"] for support in node["support"]))
 
+    def test_agent_product_lookup_returns_matching_invoice_awaiting_review(self):
+        record = {
+            "invoice_number": "INV-DELL-1", "invoice_date": "2026-10-25",
+            "vendor": {"name": "Desktop Seller"}, "customer": {"name": "Buyer One"},
+            "subtotal": 10, "tax_amount": 1, "total_amount": 11, "currency": "USD",
+            "items": [{"description": "Dell desktop computer", "quantity": 1,
+                       "unit_price": 10, "net_amount": 10, "vat_amount": 1,
+                       "gross_amount": 11}],
+            "provenance": {"provider": "test-provider", "model_revision": "test-model",
+                           "prompt_version": "test-prompt", "extraction_method": "ocr"},
+            "validation_status": "valid_reconciled",
+        }
+        self.graph.sync("doc-dell", "dell-content-hash", record,
+                        filename="dell-invoice.png", version=1)
+
+        answer = self.service.ask_graph("who bought dell desktop", mode="agent")
+
+        self.assertIn("Buyer One", answer["answer"])
+        self.assertIn("INV-DELL-1", answer["answer"])
+        self.assertIn("need review", answer["answer"])
+        self.assertFalse(answer["reviewed_only"])
+        self.assertGreater(answer["retrieval_count"], 0)
+        self.assertTrue(answer["citations"])
+
 
 class GraphPageContractTests(unittest.TestCase):
     def test_page_exposes_accessible_full_graph_and_source_details(self):
