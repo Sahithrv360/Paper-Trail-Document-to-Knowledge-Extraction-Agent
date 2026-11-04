@@ -11,7 +11,10 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY kg_agent ./kg_agent
 COPY backend ./backend
-RUN python -m pip install --no-cache-dir . \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libxcb1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir . \
     && python -m pip install --no-cache-dir -r backend/requirements-pdf.txt -r backend/requirements-rapidocr.txt
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 EXPOSE 10000
