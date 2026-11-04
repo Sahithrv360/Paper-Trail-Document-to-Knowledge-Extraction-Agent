@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import { 
-  FileText, Plus, UploadCloud, Search, 
+  FileText, Plus, FolderOpen, Search,
   ExternalLink, Play, CheckCircle2, AlertTriangle, Filter, ArrowRight
 } from 'lucide-react';
 import ConfidenceBadge from '../components/common/ConfidenceBadge';
 import { aiService } from '../services/aiService';
 
 export default function DocumentsPage() {
+  const navigate = useNavigate();
   const { openUpload } = useOutletContext();
   const [documents, setDocuments] = useState([]);
   const [watcherStatus, setWatcherStatus] = useState(null);
@@ -52,17 +53,17 @@ export default function DocumentsPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           <button className="btn btn-primary" onClick={openUpload}>
             <Plus size={16} />
-            <span>+ Upload Document</span>
+            <span>Upload folder</span>
           </button>
         </div>
       </div>
 
       {watcherStatus && (
         <div className="card" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-          <span className={`badge ${watcherStatus.running === true ? 'badge-green' : 'badge-amber'}`}>
-            {watcherStatus.running === null ? 'Folder status unavailable' : watcherStatus.running ? 'Folder watcher on' : 'Folder watcher off'}
+          <span className={`badge ${watcherStatus.watch_folder_exists ? 'badge-green' : 'badge-amber'}`}>
+            {watcherStatus.watch_folder_exists ? 'Watch folder available' : 'Watch folder missing'}
           </span>
-          <span>{watcherStatus.running === null ? `The API does not expose watcher status. Files in ${watcherStatus.folder} appear here after processing.` : watcherStatus.running ? `Drop documents into ${watcherStatus.folder}; this list refreshes automatically.` : 'Start the backend to watch a folder.'}</span>
+          <span>Folder: {watcherStatus.watch_folder}. The watcher runs as a separate process, so this API cannot confirm whether it is currently running. Supported: {(watcherStatus.supported_extensions || []).join(', ')}.</span>
         </div>
       )}
 
@@ -95,20 +96,20 @@ export default function DocumentsPage() {
             justifyContent: 'center',
             flexShrink: 0
           }}>
-            <UploadCloud size={28} />
+            <FolderOpen size={28} />
           </div>
           <div>
             <div style={{ fontSize: '1.15rem', fontWeight: 700, color: '#1e3a8a' }}>
-              Drop documents here
+              Add a file to the backend watch folder
             </div>
             <div style={{ fontSize: '0.85rem', color: '#3b82f6', marginTop: '2px' }}>
-              PDF, DOCX or TXT • Automated multi-stage extraction pipeline
+              {(watcherStatus?.supported_extensions || []).join(', ') || 'Supported formats are read from the backend'}
             </div>
           </div>
         </div>
 
         <button className="btn btn-primary btn-sm" onClick={(event) => { event.stopPropagation(); openUpload(); }}>
-          Folder instructions
+          Upload folder or files
         </button>
       </div>
 
@@ -142,7 +143,7 @@ export default function DocumentsPage() {
             <Search size={14} color="#64748b" />
             <input
               type="text"
-              placeholder="Search by filename or content..."
+              placeholder="Search by filename or status..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               style={{
@@ -227,7 +228,7 @@ export default function DocumentsPage() {
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
                       <button 
                         className="btn btn-primary btn-sm"
-                        onClick={() => navigate(`/documents/inspector/${doc.id}`)}
+                        onClick={() => navigate(`/documents/inspector/${encodeURIComponent(doc.id)}`)}
                         title="Open Document Inspector"
                       >
                         <ExternalLink size={14} />
@@ -235,7 +236,7 @@ export default function DocumentsPage() {
                       </button>
                       <button 
                         className="btn btn-outline btn-sm"
-                        onClick={() => navigate(`/processing/${doc.id}`)}
+                        onClick={() => navigate(`/processing/${encodeURIComponent(doc.id)}`)}
                         title="View Extraction Pipeline"
                       >
                         Pipeline
@@ -247,7 +248,7 @@ export default function DocumentsPage() {
               ) : (
                 <tr>
                   <td colSpan={9} style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)' }}>
-                    No documents found. Click "+ Upload Document" above or load a sample document to start extracting knowledge.
+                    No documents found. Add a supported file to the configured backend watch folder.
                   </td>
                 </tr>
               )}

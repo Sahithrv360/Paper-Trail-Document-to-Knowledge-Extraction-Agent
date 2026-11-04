@@ -66,7 +66,7 @@ export default function EntityDrawer({ isOpen, onClose, entity, onSelectRelation
                     {entity.linked_entity_id} — {entity.linked_entity_name || entity.name}
                   </div>
                   <div style={{ fontSize: '0.8rem', color: '#166534', marginTop: '2px' }}>
-                    Linked to verified master enterprise entity record
+                    This link is present in the current graph data.
                   </div>
                 </div>
               ) : (
@@ -75,7 +75,7 @@ export default function EntityDrawer({ isOpen, onClose, entity, onSelectRelation
                     No canonical entity match confirmed
                   </div>
                   <div style={{ fontSize: '0.8rem', color: '#92400e', marginTop: '2px' }}>
-                    Flagged in Review Center for human verification to avoid hallucinating business links.
+                    No linked entity identifier is recorded in the graph.
                   </div>
                 </div>
               )}
@@ -89,8 +89,8 @@ export default function EntityDrawer({ isOpen, onClose, entity, onSelectRelation
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.875rem' }}>
               <FileText size={16} color="#2563eb" />
-              <span style={{ fontWeight: 700 }}>{entity.source_doc_name || 'Contract_001.pdf'}</span>
-              <span className="badge badge-gray">Page {entity.source_page || 2}</span>
+              <span style={{ fontWeight: 700 }}>{entity.source_doc_name || 'Source name unavailable'}</span>
+              {entity.source_page && <span className="badge badge-gray">Page {entity.source_page}</span>}
             </div>
             {entity.evidence_text && (
               <div style={{ marginTop: '10px', fontSize: '0.85rem', color: 'var(--text-secondary)', backgroundColor: '#f8fafc', padding: '10px', borderRadius: 'var(--radius-md)', fontStyle: 'italic', border: '1px solid #e2e8f0' }}>
@@ -131,6 +131,9 @@ export default function EntityDrawer({ isOpen, onClose, entity, onSelectRelation
           justifyContent: 'flex-end',
           backgroundColor: '#f8fafc'
         }}>
+          {onOpenDocument && <button className="btn btn-primary btn-sm" onClick={onOpenDocument}>
+            <FileText size={14} /> Open source record
+          </button>}
           <button className="btn btn-secondary" onClick={onClose}>
             Close
           </button>

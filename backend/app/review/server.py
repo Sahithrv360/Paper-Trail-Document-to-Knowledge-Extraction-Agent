@@ -11,8 +11,8 @@ Security model (single local user):
   The token comes from ``REVIEW_TOKEN`` or is generated at start-up and printed. The
   page reads it from the URL fragment, which browsers never send to servers.
 * ``Host`` must be a loopback name (DNS-rebinding protection); a cross-origin
-  ``Origin`` is rejected; writes must be ``application/json`` (blocks form CSRF) and
-  at most 1 MB.
+  ``Origin`` is rejected; JSON writes are limited to 1 MB. A dedicated authenticated
+  multipart route accepts one supported file up to the configured file-size limit.
 * Source pages are served only for registered documents whose file still has the
   hash of the extraction being reviewed; no path from the request reaches the disk.
 * Reviews go through ``GraphStore.apply_review`` with optimistic concurrency
@@ -20,6 +20,8 @@ Security model (single local user):
 """
 
 import argparse
+from email.parser import BytesParser
+from email.policy import default as email_policy
 import gzip
 import hashlib
 import hmac
@@ -305,11 +307,11 @@ class ReviewService:
                   "Date": "#64748b", "Location": "#ec4899"}
         return {
             "kpis": {"documents_processed": len(documents),
-                     "documents_processed_today": len(documents),
-                     "entities_extracted": len(entities), "entities_today": len(entities),
+                     "documents_processed_today": None,
+                     "entities_extracted": len(entities), "entities_today": None,
                      "relationships_discovered": len(graph["edges"] + hub_edges + direct_edges),
-                     "relationships_today": len(graph["edges"] + hub_edges + direct_edges),
-                     "facts_extracted": fact_count, "facts_today": fact_count},
+                     "relationships_today": None,
+                     "facts_extracted": fact_count, "facts_today": None},
             "extraction_activity_timeline": [],
             "entities_by_type": [{"name": name, "count": type_counts[name],
                                   "color": colors.get(name, "#64748b")}
@@ -322,8 +324,158 @@ class ReviewService:
             ] if scores else []),
             "human_review_metrics": {"pending_reviews": pending,
                                      "resolved_reviews": resolved,
-                                     "rejected_hallucinations": 0},
+                                     "rejected_hallucinations": None},
         }
+
+    def evidence(self) -> list:
+        """Expose field quotations from each active extraction version."""
+        result = []
+        for row in self.graph.synced_documents(include_records=True):
+            if row.get("state") != "active":
+                continue
+            raw = row.get("corrected_record") or row.get("active_record")
+            if not raw:
+                continue
+            record = json.loads(raw) if isinstance(raw, str) else raw
+            fields = record.get("field_evidence") or record.get("evidence") or {}
+            source_file = (row.get("source_file")
+                           or (record.get("provenance") or {}).get("source_file")
+                           or row["document_id"])
+            for field, item in fields.items():
+                if not isinstance(item, dict):
+                    continue
+                quote = item.get("quote") or item.get("raw_text")
+                if not quote:
+                    continue
+                result.append({"id": f"{row['document_id']}:{field}",
+                    "source_doc_id": row["document_id"],
+                    "source_doc_name": Path(source_file).name,
+                    "entity_name": field, "entity_type": record.get("doc_type") or "Document",
+                    "field_name": field, "source_page": item.get("page"),
+                    "status": "Supported" if row.get("review_status") in {"approved", "corrected"} else "In Review",
+                    "evidence_text": quote})
+        return sorted(result, key=lambda item: (item["source_doc_name"], item["field_name"]))
+
+    def runtime_status(self) -> dict:
+        from ..config import MAX_FILE_BYTES, SUPPORTED_SUFFIXES, WATCH_FOLDER
+        documents = self.documents()
+        llm_backend = os.getenv("GRAPH_RAG_BACKEND", "anthropic").strip().lower()
+        if llm_backend not in {"anthropic", "ollama"}:
+            llm_backend = "hosted"
+        llm_model = (os.getenv("GRAPH_RAG_MODEL") or
+                     (os.getenv("OLLAMA_MODEL", "qwen3:4b") if llm_backend == "ollama"
+                      else os.getenv("VISION_API_MODEL", "")))
+        return {
+            "watch_folder": str(WATCH_FOLDER), "watch_folder_exists": WATCH_FOLDER.is_dir(),
+            "supported_extensions": sorted(SUPPORTED_SUFFIXES),
+            "max_file_mb": MAX_FILE_BYTES // (1024 * 1024),
+            "watcher_process": "separate process; availability is not monitored",
+            "registered_documents": len(documents),
+            "queued_documents": sum(row.get("file_status") in {"queued", "pending"} for row in documents),
+            "failed_documents": sum(row.get("file_status") == "failed" for row in documents),
+            "extraction_provider": getattr(self.settings, "provider", "none"),
+            "ocr_engine": getattr(self.settings, "parser_engine", "none"),
+            "device": getattr(self.settings, "device", "cpu"),
+            "completion_threshold": self.completion_threshold,
+            "neo4j_configured": self.neo4j_driver is not None,
+            "answer_backend": llm_backend,
+            "answer_model": llm_model or "not configured",
+        }
+
+    def semantic_model(self) -> list:
+        from ..graph_ontology import EDGE_TYPES, NODE_TYPES
+        graph = self.graph.export(reviewed_only=False)
+        nodes = graph.get("nodes", [])
+        edges = graph.get("edges", [])
+        result = []
+        descriptions = {
+            "Document": "A source file registered for extraction.",
+            "Invoice": "Invoice facts extracted from a source document.",
+            "Vendor": "A vendor supported by one or more source documents.",
+            "Customer": "A customer supported by one or more source documents.",
+            "LineItem": "An invoice line item and its extracted fields.",
+            "ItemDescription": "An exact item description shared by line items.",
+            "ProductCategory": "A category label, when classified.",
+            "SyntheticEmail": "Synthetic email content, explicitly marked as demo data.",
+            "ConversationSummary": "A synthetic summary, explicitly marked as demo data.",
+        }
+        for node_type in sorted(NODE_TYPES):
+            typed = [node for node in nodes if node.get("type") == node_type]
+            props = sorted({key for node in typed for key in (node.get("props") or {})})
+            rels = [{"relation": relation, "target": target}
+                    for relation, (source, target) in sorted(EDGE_TYPES.items())
+                    if source == node_type]
+            result.append({"id": node_type, "name": node_type,
+                           "description": descriptions.get(node_type, "Ontology node type."),
+                           "properties": props, "allowed_relationships": rels,
+                           "instances_count": len(typed), "examples": [
+                               str((node.get("props") or {}).get("invoice_number")
+                                   or (node.get("props") or {}).get("name")
+                                   or (node.get("props") or {}).get("title")
+                                   or node.get("id")) for node in typed[:5]],
+                           "color": "#2563eb"})
+        return result
+
+    def search(self, query: str) -> dict:
+        term = query.strip().casefold()
+        if len(term) < 2:
+            return {"documents": [], "entities": [], "relationships": [], "facts": []}
+        graph = self.graph.export(reviewed_only=False)
+        docs = self.documents()
+        def matches(value):
+            return term in str(value or "").casefold()
+        documents = [{"id": row["document_id"], "title": row.get("file") or row["document_id"],
+                      "subtitle": row.get("review_status") or row.get("file_status") or "Registered"}
+                     for row in docs if matches(row.get("file")) or matches(row.get("document_id"))][:8]
+        entities, facts = [], []
+        for node in graph.get("nodes", []):
+            props = node.get("props") or {}
+            label = (props.get("invoice_number") or props.get("name") or props.get("title")
+                     or props.get("description") or node.get("id"))
+            if node.get("type") != "Document" and (matches(label) or any(matches(v) for v in props.values() if isinstance(v, (str, int, float)))):
+                entities.append({"id": node["id"], "title": str(label), "type": node["type"],
+                                 "subtitle": node["type"]})
+            if node.get("type") in {"Invoice", "LineItem"}:
+                for key, value in props.items():
+                    if value is not None and matches(value):
+                        facts.append({"id": f"{node['id']}:{key}", "title": str(value),
+                                      "subtitle": f"{key.replace('_', ' ')} · {label}"})
+        by_id = {node["id"]: node for node in graph.get("nodes", [])}
+        relationships = []
+        for edge in graph.get("edges", []):
+            source, target = by_id.get(edge["source"], {}), by_id.get(edge["target"], {})
+            source_label = (source.get("props") or {}).get("invoice_number") or (source.get("props") or {}).get("name") or source.get("id")
+            target_label = (target.get("props") or {}).get("invoice_number") or (target.get("props") or {}).get("name") or target.get("id")
+            if matches(edge.get("type")) or matches(source_label) or matches(target_label):
+                relationships.append({"id": edge["id"], "title": edge["type"],
+                                      "subtitle": f"{source_label} → {target_label}"})
+        return {"documents": documents[:8], "entities": entities[:8],
+                "relationships": relationships[:8], "facts": facts[:8]}
+
+    def potential_conflicts(self) -> list:
+        """Only flag duplicate invoice identifiers with differing recorded values."""
+        invoices = [node for node in self.graph.export().get("nodes", [])
+                    if node.get("type") == "Invoice"]
+        groups = {}
+        for invoice in invoices:
+            props = invoice.get("props") or {}
+            number = str(props.get("invoice_number") or "").strip()
+            if number:
+                entry = groups.setdefault(number.casefold(), {"invoice_number": number, "invoices": []})
+                entry["invoices"].append(invoice)
+        result = []
+        for entry in groups.values():
+            group = entry["invoices"]
+            if len(group) < 2:
+                continue
+            differing = [key for key in ("total_amount", "currency", "invoice_date")
+                         if len({str((item.get("props") or {}).get(key)) for item in group}) > 1]
+            if differing:
+                result.append({"invoice_number": entry["invoice_number"],
+                               "properties": differing,
+                               "documents": sorted({support.get("document_id")
+                                   for item in group for support in item.get("support", [])})})
+        return result
 
     def conversation_threads(self) -> list:
         """Return only the email thread fields used by dashboard/repository cards."""
@@ -1120,6 +1272,21 @@ def make_handler(service: ReviewService, token: str):
                     return self._send(HTTPStatus.OK, data, "image/png", cache="private, max-age=60")
                 if parts == ["analytics"]:
                     return self._json(HTTPStatus.OK, service.analytics())
+                if parts == ["evidence"]:
+                    return self._json(HTTPStatus.OK, service.evidence())
+                if parts == ["status"]:
+                    return self._json(HTTPStatus.OK, service.runtime_status())
+                if parts == ["settings"]:
+                    return self._json(HTTPStatus.OK, service.runtime_status())
+                if parts == ["semantic-model"]:
+                    return self._json(HTTPStatus.OK, service.semantic_model())
+                if parts == ["contradictions"]:
+                    return self._json(HTTPStatus.OK, service.potential_conflicts())
+                if parts == ["search"]:
+                    term = query.get("q", [""])[0]
+                    if len(term) > 200:
+                        return self._error(HTTPStatus.BAD_REQUEST, "Search query is too long")
+                    return self._json(HTTPStatus.OK, service.search(term))
                 if parts == ["conversations"]:
                     return self._json(HTTPStatus.OK, service.conversation_threads())
                 if parts == ["graph"]:
@@ -1156,18 +1323,58 @@ def make_handler(service: ReviewService, token: str):
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 return self._error(HTTPStatus.BAD_REQUEST, "Bad Content-Length")
-            if length > MAX_BODY_BYTES:
-                # Discard (without storing) a moderately oversized body so the client
-                # receives the 413 instead of a reset connection; give up past 8 MB.
-                remaining = length if length <= 8 * MAX_BODY_BYTES else 0
+            from ..config import MAX_FILE_BYTES
+            body_limit = MAX_FILE_BYTES + 1024 * 1024 if route == "/api/upload" else MAX_BODY_BYTES
+            if length > body_limit:
+                # Drain a bounded oversized request so the client can receive the 413.
+                remaining = length if length <= body_limit else 0
                 while remaining > 0:
                     chunk = self.rfile.read(min(65536, remaining))
                     if not chunk:
                         break
                     remaining -= len(chunk)
                 self.close_connection = True
-                return self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Body exceeds 1 MB")
+                return self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Upload exceeds the configured file limit")
             body = self.rfile.read(length)
+            if route == "/api/upload":
+                if not content_type.startswith("multipart/form-data"):
+                    return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Upload files using multipart/form-data")
+                from ..config import SUPPORTED_SUFFIXES, WATCH_FOLDER
+                try:
+                    envelope = (f"Content-Type: {self.headers.get('Content-Type')}\r\n"
+                                "MIME-Version: 1.0\r\n\r\n").encode("utf-8")
+                    message = BytesParser(policy=email_policy).parsebytes(envelope + body)
+                    uploaded = next((part for part in message.iter_parts()
+                                     if part.get_filename()), None)
+                    if uploaded is None:
+                        return self._error(HTTPStatus.BAD_REQUEST, "Choose a file to upload")
+                    original_name = uploaded.get_filename().replace("\\", "/")
+                    filename = Path(original_name).name.strip()
+                    suffix = Path(filename).suffix.lower()
+                    data = uploaded.get_payload(decode=True) or b""
+                    if not filename or filename in {".", ".."}:
+                        return self._error(HTTPStatus.BAD_REQUEST, "Invalid filename")
+                    if suffix not in SUPPORTED_SUFFIXES:
+                        return self._error(HTTPStatus.BAD_REQUEST,
+                                           f"Unsupported file type: {suffix or '(no extension)'}")
+                    if not data or len(data) > MAX_FILE_BYTES:
+                        return self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                                           "File is empty or exceeds the configured per-file limit")
+                    WATCH_FOLDER.mkdir(parents=True, exist_ok=True)
+                    destination = WATCH_FOLDER / filename
+                    stem, extension = destination.stem, destination.suffix
+                    version = 1
+                    while destination.exists():
+                        destination = WATCH_FOLDER / f"{stem} ({version}){extension}"
+                        version += 1
+                    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.uploading")
+                    temporary.write_bytes(data)
+                    temporary.replace(destination)
+                    return self._json(HTTPStatus.CREATED, {
+                        "filename": destination.name, "watch_folder": str(WATCH_FOLDER),
+                        "bytes": len(data), "message": "Stored in watched folder; the watcher will register it."})
+                except (ValueError, OSError) as exc:
+                    return self._error(HTTPStatus.BAD_REQUEST, str(exc))
             if content_type != "application/json":
                 return self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send application/json")
             try:

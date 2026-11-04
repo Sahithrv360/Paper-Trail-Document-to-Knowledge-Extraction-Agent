@@ -7,10 +7,12 @@ import { aiService } from '../services/aiService';
 export default function AnalyticsPage() {
   const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   useEffect(() => {
-    aiService.getAnalytics().then(setAnalytics).catch(error => console.error('Failed to load analytics:', error)).finally(() => setLoading(false));
+    aiService.getAnalytics().then(setAnalytics).catch(error => setError(error.message)).finally(() => setLoading(false));
   }, []);
   if (loading) return <div className="card" style={{ padding: 50, textAlign: 'center' }}><Sparkles className="spin" /> Loading graph analytics…</div>;
+  if (error) return <div className="card" role="alert" style={{ padding: 24, color: '#b91c1c' }}>Could not load analytics from the backend: {error}</div>;
 
   const kpis = analytics?.kpis || {};
   const types = (analytics?.entities_by_type || []).filter(row => row.count > 0);

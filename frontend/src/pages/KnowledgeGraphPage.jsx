@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { 
   Search, Maximize2, Minimize2, Download, RefreshCw, 
   X, ExternalLink, Database, Layers, Building2, Box, 
@@ -92,11 +93,11 @@ export default function KnowledgeGraphPage() {
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
   }, []);
 
-  // Fetch Graph Data from Neo4j
+  // Fetch the current backend graph export (SQLite source of truth)
   const fetchGraph = useCallback(async () => {
     setIsLoading(true);
     try {
-      const data = await aiService.getKnowledgeGraph();
+      const data = await aiService.getKnowledgeGraph(true);
       setGraphData(data);
     } catch (err) {
       console.error("Failed to load Neo4j graph:", err);
@@ -107,6 +108,9 @@ export default function KnowledgeGraphPage() {
 
   useEffect(() => {
     fetchGraph();
+    const timer = window.setInterval(fetchGraph, 20000);
+    window.addEventListener('papertrail:data-changed', fetchGraph);
+    return () => { window.clearInterval(timer); window.removeEventListener('papertrail:data-changed', fetchGraph); };
   }, [fetchGraph]);
 
   useEffect(() => {
@@ -392,9 +396,8 @@ export default function KnowledgeGraphPage() {
     link.click();
   };
 
-  const copyCypher = () => {
-    const text = graphData.meta?.cypher || 'MATCH (a)-[r]->(b) RETURN a, r, b LIMIT 300';
-    navigator.clipboard.writeText(text);
+  const copyGraphJson = () => {
+    navigator.clipboard.writeText(JSON.stringify(graphData, null, 2));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -593,7 +596,7 @@ export default function KnowledgeGraphPage() {
               transition: 'all 0.15s ease'
             }}
           >
-            Raw Cypher
+            Graph JSON
           </button>
         </div>
 
@@ -681,22 +684,14 @@ export default function KnowledgeGraphPage() {
               cursor: 'pointer'
             }}
           >
-            <option value="All">All Entities ({graphData.nodes?.length || 0})</option>
-            <option value="Invoice">Invoices ({nodeStats.Invoice || 0})</option>
-            <option value="Company">Companies ({nodeStats.Company || 0})</option>
-            <option value="Vendor">Vendors ({nodeStats.Vendor || 0})</option>
-            <option value="Customer">Customers ({nodeStats.Customer || 0})</option>
-            <option value="Product">Products ({nodeStats.Product || 0})</option>
-            <option value="Location">Locations ({nodeStats.Location || 0})</option>
-            <option value="Date">Dates ({nodeStats.Date || 0})</option>
-            <option value="SyntheticEmail">Synthetic Emails ({nodeStats.SyntheticEmail || 0})</option>
-            <option value="ConversationSummary">Conversation Summary ({nodeStats.ConversationSummary || 0})</option>
+            <option value="All">All nodes ({graphData.nodes?.length || 0})</option>
+            {Object.keys(nodeStats).sort().map(type => <option key={type} value={type}>{type} ({nodeStats[type]})</option>)}
           </select>
 
-          {/* Re-simulate / Align */}
+          {/* Reset graph camera */}
           <button
             onClick={reSimulate}
-            title="Re-align Graph"
+            title="Reset graph view"
             className="btn btn-secondary btn-sm"
             style={{
               padding: '6px 8px',
@@ -932,6 +927,11 @@ export default function KnowledgeGraphPage() {
                 <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                   Graph node: {selectedNode.id}
                 </span>
+                <div style={{ marginTop: 10 }}>
+                  <Link className="btn btn-primary btn-sm" to={`/documents/inspector/${encodeURIComponent(['SyntheticEmail', 'ConversationSummary'].includes(selectedNode.type) ? selectedNode.id : selectedNode.documentId || selectedNode.support?.[0]?.document_id || selectedNode.id)}`}>
+                    <ExternalLink size={14} /> {selectedNode.type === 'SyntheticEmail' ? 'Inspect email' : 'Open source record'}
+                  </Link>
+                </div>
               </div>
 
               {/* Node Properties Card */}
@@ -1129,7 +1129,7 @@ export default function KnowledgeGraphPage() {
               All Active Knowledge Graph Records ({graphData.nodes?.length || 0} nodes, {graphData.edges?.length || 0} relationships)
             </span>
             <span style={{ fontSize: '0.8rem', color: 'var(--primary-600)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-              Cypher: {"MATCH (a)-[r]->(b) RETURN a, r, b"}
+              Source: {graphData.meta?.source || 'backend graph export'}
             </span>
           </div>
 
@@ -1188,7 +1188,7 @@ export default function KnowledgeGraphPage() {
         </div>
       )}
 
-      {/* ================= TAB 3: RAW CYPHER & JSON VIEW (LIGHT THEME) ================= */}
+      {/* ================= TAB 3: RAW GRAPH JSON VIEW ================= */}
       {activeTab === 'raw' && (
         <div style={{ flex: 1, backgroundColor: 'var(--bg-app)', padding: '20px', overflowY: 'auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
@@ -1201,7 +1201,7 @@ export default function KnowledgeGraphPage() {
               </span>
             </div>
             <button
-              onClick={copyCypher}
+              onClick={copyGraphJson}
               className="btn btn-secondary btn-sm"
               style={{
                 backgroundColor: '#ffffff',
@@ -1218,7 +1218,7 @@ export default function KnowledgeGraphPage() {
               }}
             >
               {copied ? <Check size={14} color="var(--success-600)" /> : <Copy size={14} />}
-              <span>{copied ? "Copied!" : "Copy Cypher & JSON"}</span>
+              <span>{copied ? "Copied!" : "Copy JSON"}</span>
             </button>
           </div>
 
@@ -1234,17 +1234,7 @@ export default function KnowledgeGraphPage() {
             whiteSpace: 'pre-wrap',
             boxShadow: 'var(--shadow-xs)'
           }}>
-            {`// Active Cypher Query executed on 4550f285.databases.neo4j.io
-MATCH (a)-[r]->(b)
-RETURN a, r, b
-LIMIT 300;
-
-// Summary Metadata:
-// Total Active Nodes: ${graphData.nodes?.length || 0}
-// Total Active Relationships: ${graphData.edges?.length || 0}
-// Storage Engine: Neo4j AuraDB Free Tier
-
-${JSON.stringify(graphData, null, 2)}`}
+            {JSON.stringify(graphData, null, 2)}
           </div>
         </div>
       )}

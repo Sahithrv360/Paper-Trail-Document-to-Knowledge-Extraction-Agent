@@ -69,7 +69,7 @@ export default function Sidebar({ isCollapsed, onToggleCollapse, reviewCount = 0
         {!isCollapsed && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, padding: '2px 0 5px 28px' }}>
           {[
             ['Entities', 'entities'], ['Relationships', 'relationships'],
-            ['Facts', 'facts'], ['Evidence', 'evidence'], ['Conversations', 'conversations']
+            ['Facts', 'facts'], ['Evidence', 'evidence']
           ].map(([label, tab]) => <NavLink key={tab} to={`/knowledge/${tab}`} style={({ isActive }) => ({ ...navLinkStyle({ isActive }), padding: '5px 7px', fontSize: '.75rem' })}>{label}</NavLink>)}
         </div>}
         <NavLink to="/graph" style={navLinkStyle} title={isCollapsed ? "Knowledge Graph" : undefined}>
@@ -139,7 +139,7 @@ export default function Sidebar({ isCollapsed, onToggleCollapse, reviewCount = 0
       }}>
         {!isCollapsed && (
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            KnowFlow v1.0 Demo
+            Paper Trail MVP
           </div>
         )}
         <button

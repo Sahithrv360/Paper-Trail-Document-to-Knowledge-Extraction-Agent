@@ -9,12 +9,17 @@ import { aiService } from '../services/aiService';
 export default function SemanticModelPage() {
   const [semanticTypes, setSemanticTypes] = useState([]);
   const [selectedType, setSelectedType] = useState(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     async function load() {
-      const data = await aiService.getSemanticModel();
-      setSemanticTypes(data);
-      if (data.length > 0) setSelectedType(data[0]);
+      try {
+        const data = await aiService.getSemanticModel();
+        setSemanticTypes(data);
+        if (data.length > 0) setSelectedType(data[0]);
+      } catch (loadError) {
+        setError(loadError.message);
+      }
     }
     load();
   }, []);
@@ -25,17 +30,18 @@ export default function SemanticModelPage() {
       {/* Header */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span className="badge badge-blue">Enterprise Ontology</span>
-          <span className="badge badge-green">Standardized Schema</span>
+          <span className="badge badge-blue">Backend ontology</span>
+          <span className="badge badge-green">Current graph counts</span>
         </div>
         <h1 style={{ fontSize: '1.75rem', fontWeight: 800, marginTop: '8px' }}>
           Semantic Model
         </h1>
         <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-          Define the entities and relationships that shape your business knowledge. 
-          Enforces schema constraints and prevents arbitrary invented triples.
+          Node and relationship types come from the backend ontology. Property names, counts, and examples below are observed in the current SQLite graph.
         </p>
       </div>
+
+      {error && <div className="card" role="alert" style={{ padding: '18px', color: '#b91c1c' }}>Could not load the semantic model from the backend: {error}</div>}
 
       {/* Main Layout: Types Grid + Selected Type Inspector */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 440px) 1fr', gap: '24px', alignItems: 'start' }}>
@@ -43,7 +49,7 @@ export default function SemanticModelPage() {
         {/* Left: Entity Type Cards */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
-            Configured Entity Types ({semanticTypes.length})
+            Ontology Node Types ({semanticTypes.length})
           </div>
 
           {semanticTypes.map((type) => {
@@ -117,7 +123,7 @@ export default function SemanticModelPage() {
             {/* Allowed Properties */}
             <div>
               <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '10px' }}>
-                Permitted Schema Properties
+                Properties Observed in Current Graph
               </h3>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                 {selectedType.properties.map(p => (

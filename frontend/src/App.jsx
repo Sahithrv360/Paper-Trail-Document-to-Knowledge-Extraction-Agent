@@ -31,12 +31,12 @@ export default function App() {
           <Route path="knowledge/relationships" element={<KnowledgeRepositoryPage />} />
           <Route path="knowledge/facts" element={<KnowledgeRepositoryPage />} />
           <Route path="knowledge/evidence" element={<KnowledgeRepositoryPage />} />
-          <Route path="knowledge/conversations" element={<KnowledgeRepositoryPage />} />
+          <Route path="knowledge/conversations" element={<Navigate to="/knowledge" replace />} />
           <Route path="entities" element={<Navigate to="/knowledge/entities" replace />} />
           <Route path="relationships" element={<Navigate to="/knowledge/relationships" replace />} />
           <Route path="facts" element={<Navigate to="/knowledge/facts" replace />} />
           <Route path="evidence" element={<Navigate to="/knowledge/evidence" replace />} />
-          <Route path="conversations" element={<Navigate to="/knowledge/conversations" replace />} />
+          <Route path="conversations" element={<Navigate to="/knowledge" replace />} />
           <Route path="graph" element={<KnowledgeGraphPage />} />
           <Route path="ask" element={<AskKnowledgePage />} />
           <Route path="review" element={<ReviewCenterPage />} />

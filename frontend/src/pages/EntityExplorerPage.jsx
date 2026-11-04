@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, Filter, Layers, ExternalLink, ArrowUpDown, ShieldCheck } from 'lucide-react';
 import EntityBadge from '../components/common/EntityBadge';
 import ConfidenceBadge from '../components/common/ConfidenceBadge';
@@ -7,6 +7,7 @@ import EntityDrawer from '../components/common/EntityDrawer';
 import { aiService } from '../services/aiService';
 
 export default function EntityExplorerPage() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [entities, setEntities] = useState([]);
   const [activeFilter, setActiveFilter] = useState('All');
@@ -207,7 +208,7 @@ export default function EntityExplorerPage() {
                   <td style={{ padding: '14px 16px', textAlign: 'right' }}>
                     <button 
                       className="btn btn-outline btn-sm"
-                      onClick={(e) => { e.stopPropagation(); setSelectedEntity(ent); }}
+                      onClick={(e) => { e.stopPropagation(); navigate(`/documents/inspector/${encodeURIComponent(['SyntheticEmail', 'ConversationSummary'].includes(ent.type) ? ent.id : ent.source_doc_id || ent.id)}`); }}
                     >
                       <ExternalLink size={14} />
                       <span>Inspect</span>
@@ -232,6 +233,7 @@ export default function EntityExplorerPage() {
         isOpen={Boolean(selectedEntity)}
         onClose={() => setSelectedEntity(null)}
         entity={selectedEntity}
+        onOpenDocument={() => navigate(`/documents/inspector/${encodeURIComponent(['SyntheticEmail', 'ConversationSummary'].includes(selectedEntity?.type) ? selectedEntity.id : selectedEntity?.source_doc_id || selectedEntity?.id || '')}`)}
       />
 
     </div>

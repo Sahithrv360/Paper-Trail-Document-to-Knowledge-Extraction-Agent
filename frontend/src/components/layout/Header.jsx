@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { aiService } from '../../services/aiService';
 
-export default function Header({ onOpenUpload, onOpenHelp }) {
+export default function Header({ onOpenUpload, onOpenHelp, reviewCount = 0, contradictionCount = 0 }) {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null);
@@ -36,8 +36,8 @@ export default function Header({ onOpenUpload, onOpenHelp }) {
 
     const timer = setTimeout(async () => {
       setIsSearching(true);
-      const res = await aiService.search(searchQuery);
-      setSearchResults(res);
+      try { setSearchResults(await aiService.search(searchQuery)); }
+      catch (error) { setSearchResults({ error: error.message, documents: [], entities: [], relationships: [], facts: [] }); }
       setIsSearching(false);
     }, 150);
 
@@ -103,7 +103,7 @@ export default function Header({ onOpenUpload, onOpenHelp }) {
               <span style={{ fontSize: '1.15rem', fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>
                 KnowFlow <span style={{ color: '#2563eb' }}>AI</span>
               </span>
-              <span className="badge badge-blue" style={{ fontSize: '0.65rem', padding: '1px 6px' }}>v2.4</span>
+              <span className="badge badge-blue" style={{ fontSize: '0.65rem', padding: '1px 6px' }}>MVP</span>
             </div>
             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500 }}>
               Document Intelligence → Structured Knowledge
@@ -168,7 +168,7 @@ export default function Header({ onOpenUpload, onOpenHelp }) {
           }}>
             {!hasResults ? (
               <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-                No verified records found matching "{searchQuery}"
+                {searchResults.error ? `Search unavailable: ${searchResults.error}` : `No matching records found for "${searchQuery}"`}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -218,6 +218,13 @@ export default function Header({ onOpenUpload, onOpenHelp }) {
                   </div>
                 )}
 
+                {searchResults.relationships.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: '0.725rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px' }}>Relationships ({searchResults.relationships.length})</div>
+                    {searchResults.relationships.map(item => <div key={item.id} onClick={() => handleSelectResult(item, 'relationship')} style={{ padding: '8px 10px', cursor: 'pointer', borderRadius: 6 }}><strong>{item.title}</strong><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{item.subtitle}</div></div>)}
+                  </div>
+                )}
+
                 {searchResults.facts.length > 0 && (
                   <div>
                     <div style={{ fontSize: '0.725rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px' }}>
@@ -253,7 +260,7 @@ export default function Header({ onOpenUpload, onOpenHelp }) {
           onClick={onOpenUpload}
         >
           <Plus size={16} />
-          <span>Upload Document</span>
+          <span>Watch folder</span>
         </button>
 
         <button
@@ -280,7 +287,7 @@ export default function Header({ onOpenUpload, onOpenHelp }) {
               width: '8px',
               height: '8px',
               borderRadius: '50%',
-              backgroundColor: '#ef4444'
+              backgroundColor: reviewCount + contradictionCount > 0 ? '#ef4444' : '#94a3b8'
             }} />
           </button>
 
@@ -299,12 +306,12 @@ export default function Header({ onOpenUpload, onOpenHelp }) {
             }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                 <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>Notifications</div>
-                <span className="badge badge-green">Up to date</span>
+                <span className={`badge ${reviewCount + contradictionCount ? 'badge-amber' : 'badge-green'}`}>{reviewCount + contradictionCount} open</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: '16px 8px' }}>
-                <Check size={24} color="#10b981" style={{ margin: '0 auto 4px auto' }} />
-                <span>No pending alerts or contradictions.</span>
-                <span style={{ fontSize: '0.725rem' }}>System is actively monitoring document extractions.</span>
+                <Check size={24} color={reviewCount + contradictionCount ? '#d97706' : '#10b981'} style={{ margin: '0 auto 4px auto' }} />
+                <span>{reviewCount} documents awaiting review.</span>
+                <span>{contradictionCount} potential duplicate invoice conflicts to inspect.</span>
               </div>
             </div>
           )}
@@ -324,7 +331,7 @@ export default function Header({ onOpenUpload, onOpenHelp }) {
           justifyContent: 'center',
           border: '1px solid #bfdbfe'
         }}>
-          JD
+          PT
         </div>
       </div>
     </header>

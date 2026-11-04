@@ -50,29 +50,23 @@ export default function EvidenceCenterPage() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span className="badge badge-blue">Core Design Principle</span>
-            <span className="badge badge-green">Zero Speculation</span>
+            <span className="badge badge-blue">Source evidence</span>
           </div>
           <h1 style={{ fontSize: '1.75rem', fontWeight: 800, marginTop: '8px' }}>
             Evidence Center
           </h1>
           <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginTop: '4px', maxWidth: '780px' }}>
-            Every extracted entity, relationship, and business fact is bound to immutable, verbatim source citations. 
-            No hallucinated connections are admitted into the master knowledge graph.
+            Browse quotations saved with active extraction records. Records without a stored field quotation are not shown as sourced evidence here.
           </p>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#059669' }}>100%</div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Citations Traceable</div>
-          </div>
-        </div>
+        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loaded from the current backend graph and extraction ledger.</div>
       </div>
 
       {/* Filter and Search Bar */}
       <div className="card" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          {['All', 'Supported', 'In Review', 'Disputed'].map(st => (
+          {['All', 'Supported', 'In Review'].map(st => (
             <button
               key={st}
               onClick={() => setFilterType(st)}

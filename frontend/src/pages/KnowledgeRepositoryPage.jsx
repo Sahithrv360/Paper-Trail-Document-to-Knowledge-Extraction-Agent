@@ -8,7 +8,6 @@ import EntityBadge from '../components/common/EntityBadge';
 import ConfidenceBadge from '../components/common/ConfidenceBadge';
 import EntityDrawer from '../components/common/EntityDrawer';
 import EvidenceDrawer from '../components/common/EvidenceDrawer';
-import ConversationInsights from '../components/common/ConversationInsights';
 import { aiService } from '../services/aiService';
 
 export default function KnowledgeRepositoryPage() {
@@ -18,7 +17,7 @@ export default function KnowledgeRepositoryPage() {
 
   // Active tab state: 'entities' | 'relationships' | 'facts' | 'evidence'
   const routeTab = location.pathname.split('/')[2];
-  const initialTab = searchParams.get('tab') || (['entities', 'relationships', 'facts', 'evidence', 'conversations'].includes(routeTab) ? routeTab : 'entities');
+  const initialTab = searchParams.get('tab') || (['entities', 'relationships', 'facts', 'evidence'].includes(routeTab) ? routeTab : 'entities');
   const [activeTab, setActiveTab] = useState(initialTab);
 
   // Data states
@@ -26,7 +25,6 @@ export default function KnowledgeRepositoryPage() {
   const [relationships, setRelationships] = useState([]);
   const [facts, setFacts] = useState([]);
   const [evidenceList, setEvidenceList] = useState([]);
-  const [conversationThreads, setConversationThreads] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Filter & Search states
@@ -44,18 +42,16 @@ export default function KnowledgeRepositoryPage() {
     async function loadAll() {
       setIsLoading(true);
       try {
-        const [ents, rels, fcts, evs, threads] = await Promise.all([
+        const [ents, rels, fcts, evs] = await Promise.all([
           aiService.getEntities(),
           aiService.getRelationships(),
           aiService.getFacts(),
-          aiService.getEvidence(),
-          aiService.getConversationThreads()
+          aiService.getEvidence()
         ]);
         setEntities(ents || []);
         setRelationships(rels || []);
         setFacts(fcts || []);
         setEvidenceList(evs || []);
-        setConversationThreads(threads || []);
 
         const highlightId = searchParams.get('highlight');
         if (highlightId && ents) {
@@ -73,9 +69,9 @@ export default function KnowledgeRepositoryPage() {
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
-    if (tabParam && ['entities', 'relationships', 'facts', 'evidence', 'conversations'].includes(tabParam)) {
+    if (tabParam && ['entities', 'relationships', 'facts', 'evidence'].includes(tabParam)) {
       setActiveTab(tabParam);
-    } else if (['entities', 'relationships', 'facts', 'evidence', 'conversations'].includes(routeTab)) {
+    } else if (['entities', 'relationships', 'facts', 'evidence'].includes(routeTab)) {
       setActiveTab(routeTab);
     }
   }, [searchParams, routeTab]);
@@ -105,7 +101,7 @@ export default function KnowledgeRepositoryPage() {
   });
 
   const filteredFacts = facts.filter(f => {
-    const matchesFilter = factFilter === 'All' || (f.status || 'Verified').toLowerCase() === factFilter.toLowerCase();
+    const matchesFilter = factFilter === 'All' || (f.status || '').toLowerCase() === factFilter.toLowerCase();
     const q = searchQuery.toLowerCase();
     const matchesSearch = !q ||
       (f.subject_name || '').toLowerCase().includes(q) ||
@@ -197,14 +193,6 @@ export default function KnowledgeRepositoryPage() {
           <Quote size={15} />
           <span>Evidence ({evidenceList.length})</span>
         </button>
-        <button
-          onClick={() => handleTabChange('conversations')}
-          className={`btn btn-sm ${activeTab === 'conversations' ? 'btn-primary' : 'btn-outline'}`}
-          style={{ flex: 1, minWidth: '190px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-        >
-          <Quote size={15} />
-          <span>Conversations ({conversationThreads.length})</span>
-        </button>
       </div>
 
       {/* Search and Category Filter Bar */}
@@ -212,7 +200,7 @@ export default function KnowledgeRepositoryPage() {
         
         {/* Category Pills depending on active tab */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflowX: 'auto', maxWidth: '70%' }}>
-          {activeTab === 'entities' && ['All', 'Organization', 'Product', 'Invoice', 'Money', 'Date'].map(t => (
+          {activeTab === 'entities' && ['All', ...new Set(entities.map(entity => entity.type).filter(Boolean))].map(t => (
             <button
               key={t}
               onClick={() => setEntityFilter(t)}
@@ -223,7 +211,7 @@ export default function KnowledgeRepositoryPage() {
             </button>
           ))}
 
-          {activeTab === 'relationships' && ['All', 'ISSUED', 'BILLED_TO', 'CONTAINS_ITEM', 'HAS_TOTAL'].map(r => (
+          {activeTab === 'relationships' && ['All', ...new Set(relationships.map(relation => relation.relation_type).filter(Boolean))].map(r => (
             <button
               key={r}
               onClick={() => setRelFilter(r)}
@@ -245,7 +233,7 @@ export default function KnowledgeRepositoryPage() {
             </button>
           ))}
 
-          {activeTab === 'evidence' && ['All', 'Supported', 'In Review', 'Disputed'].map(st => (
+          {activeTab === 'evidence' && ['All', 'Supported', 'In Review'].map(st => (
             <button
               key={st}
               onClick={() => setEvidenceFilter(st)}
@@ -287,7 +275,7 @@ export default function KnowledgeRepositoryPage() {
               <div 
                 key={ent.id}
                 className="card card-hover"
-                onClick={() => setSelectedEntity(ent)}
+                onClick={() => navigate(`/documents/inspector/${encodeURIComponent(['SyntheticEmail', 'ConversationSummary'].includes(ent.type) ? ent.id : ent.source_doc_id || ent.id)}`)}
                 style={{
                   padding: '18px',
                   display: 'flex',
@@ -309,7 +297,7 @@ export default function KnowledgeRepositoryPage() {
 
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)', borderTop: '1px solid #f1f5f9', paddingTop: '10px' }}>
                   <span>{ent.source_doc_name || 'KatanaML Invoice'}</span>
-                  <span style={{ color: '#2563eb', fontWeight: 600 }}>Inspect →</span>
+                  <span style={{ color: '#2563eb', fontWeight: 600 }}>Open source →</span>
                 </div>
               </div>
             ))
@@ -463,14 +451,12 @@ export default function KnowledgeRepositoryPage() {
         </div>
       )}
 
-      {activeTab === 'conversations' && <ConversationInsights threads={conversationThreads} />}
-
       {/* Drawers */}
       <EntityDrawer
         isOpen={Boolean(selectedEntity)}
         onClose={() => setSelectedEntity(null)}
         entity={selectedEntity}
-        onOpenDocument={() => navigate(`/documents/inspector/${selectedEntity?.source_doc_id || ''}`)}
+        onOpenDocument={() => navigate(`/documents/inspector/${encodeURIComponent(['SyntheticEmail', 'ConversationSummary'].includes(selectedEntity?.type) ? selectedEntity.id : selectedEntity?.source_doc_id || selectedEntity?.id || '')}`)}
       />
 
       <EvidenceDrawer

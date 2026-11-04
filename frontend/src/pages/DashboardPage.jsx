@@ -10,7 +10,6 @@ import {
 } from 'recharts';
 import KpiCard from '../components/common/KpiCard';
 import ConfidenceBadge from '../components/common/ConfidenceBadge';
-import ConversationInsights from '../components/common/ConversationInsights';
 import { aiService } from '../services/aiService';
 
 export default function DashboardPage() {
@@ -19,7 +18,6 @@ export default function DashboardPage() {
   const [documents, setDocuments] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [reviewCount, setReviewCount] = useState(0);
-  const [conversationThreads, setConversationThreads] = useState([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
@@ -28,15 +26,14 @@ export default function DashboardPage() {
     async function loadData(refresh = false) {
       if (refresh && mounted) setIsRefreshing(true);
       try {
-        const [docs, stats, revs, threads] = await Promise.all([
-          aiService.getDocuments(), aiService.getAnalytics({ refresh }),
-          aiService.getReviewItems(), aiService.getConversationThreads()
+        const [docs, stats, revs] = await Promise.all([
+          aiService.getDocuments(refresh), aiService.getAnalytics({ refresh }),
+          aiService.getReviewItems()
         ]);
         if (!mounted) return;
         setDocuments(docs || []);
         setAnalytics(stats);
         setReviewCount(revs ? revs.filter(r => r.status === "Pending").length : 0);
-        setConversationThreads(threads || []);
       } finally {
         if (mounted) setIsRefreshing(false);
       }
@@ -83,12 +80,10 @@ export default function DashboardPage() {
             onClick={openUpload}
           >
             <Plus size={16} />
-            <span>Upload Document</span>
+            <span>Upload folder</span>
           </button>
         </div>
       </div>
-
-      <ConversationInsights threads={conversationThreads} compact />
 
       {/* KPI Cards Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
@@ -343,7 +338,7 @@ export default function DashboardPage() {
               ) : (
                 <tr>
                   <td colSpan={8} style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                    No documents ingested yet. Click "+ Upload Document" above or load a sample document to begin.
+                    No documents are registered yet. Add a supported file to the configured backend watch folder.
                   </td>
                 </tr>
               )}

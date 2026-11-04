@@ -34,13 +34,13 @@ export default function FactExplorerPage() {
         <div>
           <h1 style={{ fontSize: '1.75rem', fontWeight: 800 }}>Fact Explorer</h1>
           <p style={{ fontSize: '0.95rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-            Structured business assertions extracted with exact source evidence traceability.
+            Invoice fields and line-item facts currently represented in the graph export.
           </p>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <span className="badge badge-green" style={{ fontSize: '0.85rem', padding: '6px 12px' }}>
-            {facts.length} Verified Facts
+            {facts.length} Invoice Fact Records
           </span>
         </div>
       </div>
